@@ -17,6 +17,7 @@ export interface PlayerJSON {
   inventory: InventoryJSON;
   relationships: Record<string, number>;
   missions: Record<string, MissionState>;
+  lastActiveDay: number;
 }
 
 export interface PlayerHooks {
@@ -52,6 +53,7 @@ export class Player {
   inventory = new Inventory();
   relationships = new Relationships();
   missions: Record<string, MissionState> = {};
+  lastActiveDay = 1;
 
   /** Wired by Sim; not serialized. */
   hooks!: PlayerHooks;
@@ -67,6 +69,11 @@ export class Player {
     return { reason, day: this.hooks.day(), time: this.hooks.time() };
   }
 
+  /** Mark the player active today (drives retention analytics). */
+  touch(): void {
+    this.lastActiveDay = this.hooks.day();
+  }
+
   adjustEnergy(delta: number): void {
     this.energy = clamp(this.energy + delta);
   }
@@ -80,6 +87,7 @@ export class Player {
   }
 
   travel(toId: string): void {
+    this.touch();
     this.hooks.assertLocation(toId);
     if (toId === this.locationId) return;
     const { cost, minutes } = this.hooks.travelCost(toId);
@@ -91,6 +99,7 @@ export class Player {
   }
 
   sleep(hours = 8): void {
+    this.touch();
     this.hooks.advanceMinutes(Math.round(hours * 60));
     this.adjustEnergy(60);
     this.adjustHealth(10);
@@ -98,6 +107,7 @@ export class Player {
   }
 
   eat(cost = 1500, energyGain = 25): void {
+    this.touch();
     if (cost > 0) this.wallet.debit(cost, this.stamp("food"));
     this.adjustEnergy(energyGain);
     this.adjustHealth(2);
@@ -105,6 +115,7 @@ export class Player {
   }
 
   acceptJob(jobId: string): void {
+    this.touch();
     this.hooks.assertJob(jobId);
     const reqs = this.hooks.jobRequirements(jobId);
     if (!this.progression.meets(reqs)) {
@@ -115,6 +126,7 @@ export class Player {
   }
 
   quitJob(): void {
+    this.touch();
     if (!this.jobId) return;
     const old = this.jobId;
     this.jobId = null;
@@ -123,6 +135,7 @@ export class Player {
 
   /** Work one shift: consumes time + energy, pays daily wage, grants XP. */
   work(): number {
+    this.touch();
     if (!this.jobId) throw new Error("Player has no job. Call acceptJob() first.");
     if (this.energy < 10) throw new Error("Too tired to work. Sleep or eat first.");
     const hours = this.hooks.jobWorkingHours(this.jobId);
@@ -144,6 +157,7 @@ export class Player {
 
   /** Buy items at catalog price. Costs a little time (shopping). */
   buy(itemId: string, qty = 1): void {
+    this.touch();
     const item = this.hooks.getItem(itemId);
     if (qty <= 0) throw new Error("Quantity must be positive");
     this.wallet.debit(item.price * qty, this.stamp(`buy:${itemId}x${qty}`));
@@ -154,6 +168,7 @@ export class Player {
 
   /** Use one unit: applies its energy/health effects. */
   use(itemId: string): void {
+    this.touch();
     const item = this.hooks.getItem(itemId);
     this.inventory.remove(itemId, 1);
     if (item.energy) this.adjustEnergy(item.energy);
@@ -167,6 +182,7 @@ export class Player {
 
   /** Sell back at 50% of catalog price (rounded down). */
   sell(itemId: string, qty = 1): number {
+    this.touch();
     const item = this.hooks.getItem(itemId);
     this.inventory.remove(itemId, qty);
     const gain = Math.floor((item.price * qty) / 2);
@@ -189,6 +205,7 @@ export class Player {
       inventory: this.inventory.toJSON(),
       relationships: this.relationships.toJSON(),
       missions: JSON.parse(JSON.stringify(this.missions)) as Record<string, MissionState>,
+      lastActiveDay: this.lastActiveDay,
     };
   }
 
@@ -203,6 +220,7 @@ export class Player {
     p.inventory = Inventory.fromJSON(json.inventory);
     p.relationships = Relationships.fromJSON(json.relationships);
     p.missions = { ...(json.missions ?? {}) };
+    p.lastActiveDay = json.lastActiveDay ?? 1;
     return p;
   }
 }

@@ -1,4 +1,4 @@
-export { Sim, createSimulation, type SimSnapshot } from "./sim.js";
+export { Sim, createSimulation, type SimSnapshot, type DayStat } from "./sim.js";
 export { GameClock, WEEKDAYS, type Weekday } from "./time.js";
 export { Wallet, type Transaction } from "./wallet.js";
 export { World, type Location } from "./world.js";
@@ -15,6 +15,7 @@ export { Relationships } from "./relationships.js";
 export { ItemCatalog, Inventory, type Item, type ItemDef } from "./inventory.js";
 export { BusinessManager, type Business, type BusinessDef } from "./businesses.js";
 export { MissionManager, type Mission, type MissionDef, type MissionGoal, type MissionState } from "./missions.js";
+export { TradeLedger, type TradeOffer, type TradeStatus, type TradeTerms } from "./trades.js";
 export { PACKS, listPacks, installPack, type Pack } from "./packs/index.js";
 export type {
   SimConfig,

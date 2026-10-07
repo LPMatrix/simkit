@@ -9,6 +9,7 @@ import { NpcManager } from "./npcs.js";
 import { ItemCatalog, type ItemDef } from "./inventory.js";
 import { BusinessManager, type BusinessDef } from "./businesses.js";
 import { MissionManager, type MissionDef } from "./missions.js";
+import { TradeLedger, type TradeOffer, type TradeTerms } from "./trades.js";
 import type { NpcDef } from "./npcs.js";
 import type { CreatePlayerOptions, JobDef, LocationDef, SimConfig } from "./types.js";
 import type { SimLogEvent } from "./events.js";
@@ -27,14 +28,28 @@ export interface SimSnapshot {
   items: ReturnType<ItemCatalog["toJSON"]>;
   businesses: ReturnType<BusinessManager["toJSON"]>;
   missions: ReturnType<MissionManager["toJSON"]>;
+  trades: ReturnType<TradeLedger["toJSON"]>;
   eventRuntime: ReturnType<EventEngine["toJSON"]>;
   log: SimLogEvent[];
   priceModifiers: Record<string, number>;
   playerSeq: number;
   worldVersion: string;
+  history: DayStat[];
+  lastRecordedDay: number;
 }
 
 export type SimEventHandler = (event: SimLogEvent) => void;
+
+/** One row of economy history, recorded as game days pass. */
+export interface DayStat {
+  day: number;
+  players: number;
+  totalCurrency: number;
+  avgWealth: number;
+  avgLevel: number;
+  /** Cumulative simulation log length — deltas are per-day event volume. */
+  simEvents: number;
+}
 
 /**
  * Root simulation object.
@@ -60,6 +75,7 @@ export class Sim {
   items = new ItemCatalog();
   businesses = new BusinessManager();
   missions = new MissionManager();
+  trades = new TradeLedger();
   store: Store;
   priceModifiers: Record<string, number> = {};
   /** Current versioned-world tag (see WorldCatalog). Defaults to "v1". */
@@ -70,6 +86,9 @@ export class Sim {
   private log: SimLogEvent[] = [];
   private seq = 0;
   private handlers = new Map<string, SimEventHandler[]>();
+  /** Economy time-series (§7 observability). */
+  history: DayStat[] = [];
+  private lastRecordedDay = 1;
 
   constructor(config: SimConfig, store?: Store) {
     this.gameId = config.gameId;
@@ -174,6 +193,7 @@ export class Sim {
         this.clock.advanceMinutes(m);
         // Tick daily events for each day boundary crossed.
         for (let d = before; d < this.clock.day; d++) this.tickDay(d + 1);
+        if (this.clock.day !== before) this.maybeRecordDays();
       },
       travelCost: (toId: string) => {
         const loc = this.world.get(toId);
@@ -220,7 +240,62 @@ export class Sim {
       this.clock.advanceDays(1);
       fired.push(...this.events.tick(this.eventCtx()));
     }
+    this.maybeRecordDays();
     return fired;
+  }
+
+  private recordDay(day: number): void {
+    const s = this.stats();
+    this.history.push({
+      day,
+      players: s.totalPlayers,
+      totalCurrency: s.totalCurrency,
+      avgWealth: s.avgWealth,
+      avgLevel: s.avgLevel,
+      simEvents: this.log.length,
+    });
+    if (this.history.length > 730) this.history.splice(0, this.history.length - 730);
+  }
+
+  /** Backfill one row per elapsed game day (state is current — trends, not audits). */
+  private maybeRecordDays(): void {
+    while (this.lastRecordedDay < this.clock.day) {
+      this.lastRecordedDay += 1;
+      this.recordDay(this.lastRecordedDay);
+    }
+  }
+
+  /** Dashboard-grade analytics: series, wealth distribution, retention. */
+  analytics(): {
+    series: DayStat[];
+    wealthBuckets: { label: string; count: number }[];
+    retention: { total: number; active7d: number; active30d: number };
+    eventCounts: Record<string, number>;
+  } {
+    const players = [...this.playersMap.values()];
+    const today = this.clock.day;
+    const bands: { label: string; max: number }[] = [
+      { label: "< ₦10k", max: 10000 },
+      { label: "₦10k–50k", max: 50000 },
+      { label: "₦50–200k", max: 200000 },
+      { label: "₦200k–1m", max: 1000000 },
+      { label: "> ₦1m", max: Number.MAX_SAFE_INTEGER },
+    ];
+    const wealthBuckets = bands.map((b) => ({ label: b.label, count: 0 }));
+    for (const p of players) {
+      const idx = bands.findIndex((b) => p.wallet.balance < b.max);
+      wealthBuckets[idx === -1 ? wealthBuckets.length - 1 : idx].count += 1;
+    }
+    return {
+      series: [...this.history],
+      wealthBuckets,
+      retention: {
+        total: players.length,
+        active7d: players.filter((p) => today - p.lastActiveDay < 7).length,
+        active30d: players.filter((p) => today - p.lastActiveDay < 30).length,
+      },
+      eventCounts: Object.fromEntries(this.events.triggerCounts),
+    };
   }
 
   /** Manually trigger an event (simulation console). */
@@ -294,6 +369,7 @@ export class Sim {
     if (npc.location && npc.location !== player.locationId) {
       throw new Error(`${npc.name} is at ${npc.location} — travel there first`);
     }
+    player.touch();
     const before = player.relationships.level(npcId);
     const line = this.rng.pick(npc.dialogue);
     this.clock.advanceMinutes(15);
@@ -314,6 +390,8 @@ export class Sim {
     if (!(amount > 0)) throw new Error("Transfer amount must be positive");
     const from = this.players.get(fromId);
     const to = this.players.get(toId);
+    from.touch();
+    to.touch();
     const day = this.clock.day;
     const time = this.clock.timeLabel;
     from.wallet.debit(amount, { reason: `${reason}:to:${toId}`, day, time });
@@ -323,11 +401,87 @@ export class Sim {
     this.emit("PLAYER_TRANSFERRED", { from: fromId, to: toId, amount }, fromId);
   }
 
+  // ---- multiplayer: trade offers (propose / accept / decline) ----
+  /** Propose a cash+item swap. The offer side is validated now AND at acceptance. */
+  offerTrade(fromId: string, toId: string, terms: TradeTerms): TradeOffer {
+    const from = this.players.get(fromId);
+    this.players.get(toId); // fail fast on unknown counterparty
+    if ((terms.offerCash ?? 0) > from.wallet.balance) {
+      throw new Error("You can't afford what you're offering");
+    }
+    for (const [id, qty] of Object.entries(terms.offerItems ?? {})) {
+      if (from.inventory.count(id) < qty) throw new Error(`You don't have ${qty}x ${id}`);
+    }
+    const offer = this.trades.propose(fromId, toId, terms, this.clock.day);
+    from.touch();
+    this.emit("TRADE_PROPOSED", { tradeId: offer.id, to: toId }, fromId);
+    return offer;
+  }
+
+  /** Counterparty accepts: all legs move atomically or nothing does. */
+  acceptTrade(tradeId: string, byPlayerId: string): TradeOffer {
+    const offer = this.trades.get(tradeId);
+    if (offer.status !== "pending") throw new Error(`Trade is already ${offer.status}`);
+    if (offer.to !== byPlayerId) throw new Error("Only the counterparty can accept");
+    const from = this.players.get(offer.from);
+    const to = this.players.get(offer.to);
+    if (from.wallet.balance < offer.offerCash) {
+      throw new Error(`${from.name} can no longer afford this trade`);
+    }
+    if (to.wallet.balance < offer.askCash) {
+      throw new Error(`${to.name} can no longer afford this trade`);
+    }
+    for (const [id, qty] of Object.entries(offer.offerItems)) {
+      if (from.inventory.count(id) < qty) throw new Error(`${from.name} no longer has ${qty}x ${id}`);
+    }
+    for (const [id, qty] of Object.entries(offer.askItems)) {
+      if (to.inventory.count(id) < qty) throw new Error(`${to.name} no longer has ${qty}x ${id}`);
+    }
+    const stamp = { day: this.clock.day, time: this.clock.timeLabel };
+    const moveCash = (a: typeof from, b: typeof to, amount: number): void => {
+      if (amount <= 0) return;
+      a.wallet.debit(amount, { reason: `trade:${tradeId}:to:${b.id}`, ...stamp });
+      b.wallet.credit(amount, { reason: `trade:${tradeId}:from:${a.id}`, ...stamp });
+    };
+    moveCash(from, to, offer.offerCash);
+    moveCash(to, from, offer.askCash);
+    const moveItems = (a: typeof from, b: typeof to, items: Record<string, number>): void => {
+      for (const [id, qty] of Object.entries(items)) {
+        a.inventory.remove(id, qty);
+        b.inventory.add(id, qty);
+      }
+    };
+    moveItems(from, to, offer.offerItems);
+    moveItems(to, from, offer.askItems);
+    from.touch();
+    to.touch();
+    this.trades.markAccepted(tradeId);
+    this.emit("TRADE_ACCEPTED", { tradeId, from: from.id, to: to.id }, to.id);
+    return this.trades.get(tradeId);
+  }
+
+  declineTrade(tradeId: string, byPlayerId: string): TradeOffer {
+    const offer = this.trades.decline(tradeId, byPlayerId);
+    this.emit("TRADE_DECLINED", { tradeId }, byPlayerId);
+    return offer;
+  }
+
+  cancelTrade(tradeId: string, byPlayerId: string): TradeOffer {
+    const offer = this.trades.cancel(tradeId, byPlayerId);
+    this.emit("TRADE_CANCELLED", { tradeId }, byPlayerId);
+    return offer;
+  }
+
+  listTrades(playerId?: string): TradeOffer[] {
+    return this.trades.pendingFor(playerId);
+  }
+
   // ---- businesses ----
   buyBusiness(playerId: string, businessId: string): void {
     const player = this.players.get(playerId);
     const biz = this.businesses.get(businessId);
     if (biz.ownerId) throw new Error(`${biz.name} is already owned`);
+    player.touch();
     player.wallet.debit(biz.cost, {
       reason: `business:${businessId}`,
       day: this.clock.day,
@@ -343,6 +497,7 @@ export class Sim {
     const player = this.players.get(playerId);
     const biz = this.businesses.get(businessId);
     if (biz.ownerId !== playerId) throw new Error(`You don't own ${biz.name}`);
+    player.touch();
     const days = this.clock.day - biz.lastCollectedDay;
     if (days <= 0) throw new Error(`${biz.name} has nothing to collect yet — come back tomorrow`);
     const payout = biz.dailyIncome * days;
@@ -360,6 +515,7 @@ export class Sim {
   acceptMission(playerId: string, missionId: string): void {
     const player = this.players.get(playerId);
     this.missions.get(missionId);
+    player.touch();
     const state = (player.missions[missionId] ??= { accepted: false, claimed: false });
     if (state.accepted) throw new Error("Mission already accepted");
     state.accepted = true;
@@ -401,6 +557,7 @@ export class Sim {
   claimMission(playerId: string, missionId: string): number {
     const player = this.players.get(playerId);
     const mission = this.missions.get(missionId);
+    player.touch();
     const state = player.missions[missionId];
     if (!state?.accepted) throw new Error("Mission not accepted yet");
     if (state.claimed) throw new Error("Mission reward already claimed");
@@ -462,11 +619,14 @@ export class Sim {
       items: this.items.toJSON(),
       businesses: this.businesses.toJSON(),
       missions: this.missions.toJSON(),
+      trades: this.trades.toJSON(),
       eventRuntime: this.events.toJSON(),
       log: [...this.log],
       priceModifiers: { ...this.priceModifiers },
       playerSeq: this.playerSeq,
       worldVersion: this.worldVersion,
+      history: [...this.history],
+      lastRecordedDay: this.lastRecordedDay,
     };
   }
 
@@ -483,11 +643,14 @@ export class Sim {
     sim.items = ItemCatalog.fromJSON(snapshot.items ?? []);
     sim.businesses = BusinessManager.fromJSON(snapshot.businesses ?? []);
     sim.missions = MissionManager.fromJSON(snapshot.missions ?? []);
+    sim.trades = TradeLedger.fromJSON(snapshot.trades ?? []);
     sim.priceModifiers = { ...snapshot.priceModifiers };
     sim.log = [...snapshot.log];
     sim.seq = snapshot.log.length;
     sim.playerSeq = snapshot.playerSeq;
     sim.worldVersion = snapshot.worldVersion ?? "v1";
+    sim.history = [...(snapshot.history ?? [])];
+    sim.lastRecordedDay = snapshot.lastRecordedDay ?? snapshot.clock.day;
     sim.playersMap.clear();
     for (const pj of snapshot.players) {
       const p = Player.fromJSON(pj);

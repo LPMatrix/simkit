@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { Sim, type SimSnapshot } from "../src/index.js";
 import { WorldCatalog } from "../src/worlds.js";
 import { Meter } from "./metering.js";
+import { SqliteGameStore } from "./sqlite.js";
 
 /** Seed content for the default game so the API boots with a playable world. */
 export function lagosSeed(): {
@@ -41,7 +42,7 @@ export function lagosSeed(): {
   };
 }
 
-/** Multi-game registry with JSON-file snapshot persistence (Postgres later). */
+/** Multi-game registry with pluggable snapshot persistence (JSON dir or SQLite file). */
 export class GameRegistry {
   private games = new Map<string, Sim>();
   private saveTimers = new Map<string, NodeJS.Timeout>();
@@ -49,8 +50,21 @@ export class GameRegistry {
   readonly meter = new Meter();
   /** Versioned world definitions per game. */
   readonly catalog = new WorldCatalog();
+  private sqlite: SqliteGameStore | null = null;
 
-  constructor(private dataDir: string | null) {}
+  constructor(
+    private dataDir: string | null,
+    opts: { sqlitePath?: string } = {},
+  ) {
+    if (opts.sqlitePath) this.sqlite = new SqliteGameStore(opts.sqlitePath);
+  }
+
+  close(): void {
+    for (const t of this.saveTimers.values()) clearTimeout(t);
+    this.saveTimers.clear();
+    this.sqlite?.close();
+    this.sqlite = null;
+  }
 
   private snapshotPath(gameId: string): string | null {
     if (!this.dataDir) return null;
@@ -58,20 +72,33 @@ export class GameRegistry {
   }
 
   async init(): Promise<void> {
-    if (this.dataDir) await fs.mkdir(this.dataDir, { recursive: true });
     // Load persisted games, else boot default.
-    if (this.dataDir) {
-      const files = await fs.readdir(this.dataDir).catch(() => []);
-      for (const f of files) {
-        if (!f.endsWith(".json")) continue;
-        try {
-          const raw = await fs.readFile(join(this.dataDir, f), "utf8");
-          const snap = JSON.parse(raw) as SimSnapshot;
-          const sim = Sim.restore(snap);
-          this.games.set(sim.gameId, sim);
-        } catch {
-          // Corrupt snapshot: skip, re-seed below if registry ends up empty.
+    const raws: string[] = [];
+    if (this.sqlite) {
+      for (const id of this.sqlite.listGames()) {
+        const raw = this.sqlite.loadSnapshot(id);
+        if (raw) raws.push(raw);
+      }
+    } else {
+      if (this.dataDir) await fs.mkdir(this.dataDir, { recursive: true });
+      if (this.dataDir) {
+        const files = await fs.readdir(this.dataDir).catch(() => []);
+        for (const f of files) {
+          if (!f.endsWith(".json")) continue;
+          try {
+            raws.push(await fs.readFile(join(this.dataDir, f), "utf8"));
+          } catch {
+            // Unreadable file: skip.
+          }
         }
+      }
+    }
+    for (const raw of raws) {
+      try {
+        const sim = Sim.restore(JSON.parse(raw) as SimSnapshot);
+        this.games.set(sim.gameId, sim);
+      } catch {
+        // Corrupt snapshot: skip, re-seed below if registry ends up empty.
       }
     }
     if (this.games.size === 0) {
@@ -146,13 +173,17 @@ export class GameRegistry {
     return sim;
   }
 
-  /** Persist snapshot to disk (debounced fire-and-forget + awaitable). */
+  /** Persist snapshot (SQLite row when configured, else JSON file). */
   async persist(gameId: string): Promise<void> {
-    const path = this.snapshotPath(gameId);
-    if (!path) return;
     const sim = this.games.get(gameId);
     if (!sim) return;
     const raw = JSON.stringify(sim.snapshot());
+    if (this.sqlite) {
+      this.sqlite.saveSnapshot(gameId, raw);
+      return;
+    }
+    const path = this.snapshotPath(gameId);
+    if (!path) return;
     await fs.writeFile(path, raw, "utf8");
   }
 

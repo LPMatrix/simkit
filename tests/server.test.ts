@@ -145,6 +145,40 @@ describe("API server", () => {
     expect(claimed.reward).toBe(500);
   });
 
+  it("analytics endpoint reports series and retention", async () => {
+    const headers = { "x-api-key": apiKey, "content-type": "application/json" };
+    const client = new SimClient({ baseUrl, apiKey, gameId: "test-lagos" });
+    await client.advance(3);
+    const a = await client.analytics();
+    expect((a.series as unknown[]).length).toBeGreaterThanOrEqual(3);
+    expect(a.retention as object).toMatchObject({ total: expect.any(Number) });
+  });
+
+  it("trade endpoints propose and settle swaps", async () => {
+    const headers = { "x-api-key": apiKey, "content-type": "application/json" };
+    const post = (path: string, body?: unknown) =>
+      fetch(`${baseUrl}${path}`, { method: "POST", headers, body: body ? JSON.stringify(body) : undefined });
+    const client = new SimClient({ baseUrl, apiKey, gameId: "test-lagos" });
+    const a = await client.createPlayer({ name: "TraderA", location: "yaba" });
+    const b = await client.createPlayer({ name: "TraderB", location: "yaba" });
+
+    const offer = await (await post("/v1/games/test-lagos/trades", {
+      from: a.id, to: b.id, offerCash: 2000, askCash: 1000,
+    })).json();
+    expect(offer.status).toBe("pending");
+
+    const listed = await (await fetch(`${baseUrl}/v1/games/test-lagos/trades?playerId=${b.id}`, { headers })).json();
+    expect(listed.trades).toHaveLength(1);
+
+    const done = await (await post(`/v1/games/test-lagos/trades/${offer.id}/accept`, { by: b.id })).json();
+    expect(done.status).toBe("accepted");
+
+    const afterA = await client.getPlayer(a.id);
+    const afterB = await client.getPlayer(b.id);
+    expect(afterA.wallet.balance).toBe(a.wallet.balance - 2000 + 1000);
+    expect(afterB.wallet.balance).toBe(50000 - 1000 + 2000);
+  });
+
   it("world migration endpoint bumps rules safely", async () => {
     const headers = { "x-api-key": apiKey, "content-type": "application/json" };
     const bad = await fetch(`${baseUrl}/v1/games/test-lagos/migrate`, {

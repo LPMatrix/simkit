@@ -50,7 +50,14 @@ console.log(sim.stats());
 - **Items + inventory**: `buy / use / sell` with energy/health effects
 - **Businesses**: buy once, collect per-day income
 - **Missions**: earn/wealth/level/relationship/own goals with cash + XP rewards
-- **Multiplayer**: atomic player-to-player `transfer()` with paired transactions
+- **Multiplayer**: atomic player-to-player `transfer()` with paired transactions,
+  plus `offerTrade / acceptTrade / declineTrade` swaps of cash + items,
+  validated at proposal and acceptance
+
+```ts
+const offer = sim.offerTrade(ada.id, bola.id, { offerCash: 5000, offerItems: { amala: 1 }, askCash: 8000 });
+sim.acceptTrade(offer.id, bola.id); // atomic or nothing moves
+```
 
 ```ts
 sim.talk(player.id, "mama-put");          // { line, score, level }
@@ -87,6 +94,7 @@ SSE realtime event streams.
 ```bash
 npm run server
 # env: PORT=8787 SIMKIT_API_KEYS=key1,key2 SIMKIT_DATA_DIR=./.simkit-data
+# durable single-file store: SIMKIT_SQLITE_PATH=./simkit.db
 # auth off for local dev: SIMKIT_NO_AUTH=1
 ```
 
@@ -103,7 +111,9 @@ player `.../players` + `.../players/:pid/actions` (`work|travel|sleep|eat|accept
 `.../players/:pid/businesses/:bid/{buy,collect}`,
 `.../players/:pid/missions[/:mid/{accept,claim}]`,
 define `POST .../{npcs,items,businesses,missions}`,
-`POST .../advance`, `GET .../log`, `GET .../stream` (SSE),
+`.../trades` (`POST` propose, `GET ?playerId=`, `.../:id/{accept,decline,cancel}`),
+`POST .../advance`, `GET .../log`, `GET .../analytics`
+(economy series, wealth buckets, 7d/30d retention), `GET .../stream` (SSE),
 `POST .../console/{give-all,set-price,trigger,reset-economy}`,
 `GET .../snapshot`.
 
@@ -122,9 +132,17 @@ await client.advance(7);
 ## Dashboard (Phase 3)
 
 `GET /dashboard` serves the simulation observability UI: game selector,
-economy cards, player table with work/sleep actions, world listing,
+economy cards, economy time-series chart with 7d/30d retention and wealth
+distribution, player table with work/sleep actions, world listing,
 realtime event log (SSE), and console controls (advance day/week,
 give-all, trigger event, set price, reset economy).
+
+## Persistence
+
+JSON snapshot dir by default (`SIMKIT_DATA_DIR`); single-file durable
+SQLite with `SIMKIT_SQLITE_PATH=./simkit.db` (zero dependencies via
+`node:sqlite`). Postgres remains the scale-out answer behind the `Store`
+interface.
 
 ## Reference game (Phase 4)
 

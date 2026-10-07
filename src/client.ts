@@ -153,6 +153,37 @@ export class SimClient {
     });
   }
 
+  async offerTrade(from: string, to: string, terms: { offerCash?: number; offerItems?: Record<string, number>; askCash?: number; askItems?: Record<string, number> }): Promise<Record<string, unknown>> {
+    return this.req(`/v1/games/${this.gameId}/trades`, {
+      method: "POST",
+      body: JSON.stringify({ from, to, ...terms }),
+    });
+  }
+
+  async listTrades(playerId?: string): Promise<{ trades: Record<string, unknown>[] }> {
+    const q = playerId ? `?playerId=${playerId}` : "";
+    return this.req(`/v1/games/${this.gameId}/trades${q}`);
+  }
+
+  private async tradeAction(tradeId: string, action: "accept" | "decline" | "cancel", by: string): Promise<Record<string, unknown>> {
+    return this.req(`/v1/games/${this.gameId}/trades/${tradeId}/${action}`, {
+      method: "POST",
+      body: JSON.stringify({ by }),
+    });
+  }
+
+  acceptTrade(tradeId: string, by: string): Promise<Record<string, unknown>> {
+    return this.tradeAction(tradeId, "accept", by);
+  }
+
+  declineTrade(tradeId: string, by: string): Promise<Record<string, unknown>> {
+    return this.tradeAction(tradeId, "decline", by);
+  }
+
+  analytics(): Promise<Record<string, unknown>> {
+    return this.req(`/v1/games/${this.gameId}/analytics`);
+  }
+
   advance(days = 1): Promise<{ day: number; fired: string[] }> {
     return this.req(`/v1/games/${this.gameId}/advance`, {
       method: "POST",

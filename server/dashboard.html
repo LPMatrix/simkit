@@ -42,6 +42,12 @@
   <div class="row" id="stats"></div>
 
   <div class="card">
+    <h2>Economy series + retention</h2>
+    <canvas id="spark" width="900" height="90" style="width:100%;height:90px"></canvas>
+    <div class="mut" id="retention">—</div>
+  </div>
+
+  <div class="card">
     <h2>Simulation console</h2>
     <div class="toolbar">
       <button data-act="advance" data-days="1">Advance 1 day</button>
@@ -109,10 +115,11 @@ async function refreshGames() {
 
 async function refresh() {
   const g = state.game;
-  const [info, players, log] = await Promise.all([
+  const [info, players, log, analytics] = await Promise.all([
     api(`/v1/games/${g}`),
     api(`/v1/games/${g}/players`),
     api(`/v1/games/${g}/log?limit=80`),
+    api(`/v1/games/${g}/analytics`),
   ]);
   $("clock").textContent = `Day ${info.clock.day} ${info.clock.weekday} ${info.clock.time}`;
   $("stats").innerHTML = [
@@ -130,6 +137,27 @@ async function refresh() {
     `<b>Locations</b><br>${info.world.map(l => `${l.id} — ₦${l.travelCost} / ${l.travelTimeMinutes}m`).join("<br>")}<br><br>` +
     `<b>Jobs</b><br>${info.jobs.map(j => `${j.id} — ₦${j.salary}/mo`).join("<br>")}`;
   $("log").textContent = log.log.map(e => `day${e.day} ${e.time} ${e.type}${e.playerId ? " " + e.playerId : ""}`).join("\n");
+  const r = analytics.retention;
+  $("retention").textContent =
+    `Active 7d: ${r.active7d}/${r.total} · Active 30d: ${r.active30d}/${r.total} · ` +
+    `Wealth: ${analytics.wealthBuckets.map(b => `${b.label} ${b.count}`).join(" · ")}`;
+  spark($("spark"), analytics.series.map(s => s.avgWealth));
+}
+
+function spark(canvas, values) {
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!values.length) {
+    ctx.fillStyle = "#8b949e"; ctx.font = "20px sans-serif";
+    ctx.fillText("advance days to build history", 12, 50);
+    return;
+  }
+  const max = Math.max(...values, 1), min = Math.min(...values, 0);
+  const X = (i) => values.length === 1 ? canvas.width / 2 : 8 + (i * (canvas.width - 16)) / (values.length - 1);
+  const Y = (v) => canvas.height - 10 - ((v - min) / Math.max(max - min, 1)) * (canvas.height - 20);
+  ctx.strokeStyle = "#2f81f7"; ctx.lineWidth = 2; ctx.beginPath();
+  values.forEach((v, i) => i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v)));
+  ctx.stroke();
 }
 
 function connectStream() {

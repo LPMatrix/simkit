@@ -177,6 +177,10 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
       send(res, 200, registry.get(p.gameId).stats());
     }),
 
+    route("GET", "/v1/games/:gameId/analytics", (_req, res, p) => {
+      send(res, 200, registry.get(p.gameId).analytics());
+    }),
+
     route("GET", "/v1/packs", (_req, res, _p, url) => {
       const kind = url.searchParams.get("kind");
       send(res, 200, {
@@ -432,6 +436,54 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
       const reward = sim.claimMission(p.playerId, p.missionId);
       registry.schedulePersist(p.gameId);
       send(res, 200, { reward, player: sim.players.get(p.playerId).toJSON() });
+    }),
+
+    route("GET", "/v1/games/:gameId/trades", (_req, res, p, url) => {
+      const sim = registry.get(p.gameId);
+      send(res, 200, { trades: sim.listTrades(url.searchParams.get("playerId") ?? undefined) });
+    }),
+
+    route("POST", "/v1/games/:gameId/trades", async (_req, res, p, _url, body) => {
+      const sim = registry.get(p.gameId);
+      const b = asObject(body);
+      if (typeof b.from !== "string" || typeof b.to !== "string") {
+        return send(res, 400, { error: "from and to (player ids) required" });
+      }
+      const offer = sim.offerTrade(b.from, b.to, {
+        offerCash: typeof b.offerCash === "number" ? b.offerCash : 0,
+        offerItems: b.offerItems as Record<string, number> | undefined,
+        askCash: typeof b.askCash === "number" ? b.askCash : 0,
+        askItems: b.askItems as Record<string, number> | undefined,
+      });
+      registry.schedulePersist(p.gameId);
+      send(res, 201, offer);
+    }),
+
+    route("POST", "/v1/games/:gameId/trades/:tradeId/accept", async (_req, res, p, _url, body) => {
+      const sim = registry.get(p.gameId);
+      const b = asObject(body);
+      if (typeof b.by !== "string") return send(res, 400, { error: "by (accepting player id) required" });
+      const offer = sim.acceptTrade(p.tradeId, b.by);
+      registry.schedulePersist(p.gameId);
+      send(res, 200, offer);
+    }),
+
+    route("POST", "/v1/games/:gameId/trades/:tradeId/decline", async (_req, res, p, _url, body) => {
+      const sim = registry.get(p.gameId);
+      const b = asObject(body);
+      if (typeof b.by !== "string") return send(res, 400, { error: "by (player id) required" });
+      const offer = sim.declineTrade(p.tradeId, b.by);
+      registry.schedulePersist(p.gameId);
+      send(res, 200, offer);
+    }),
+
+    route("POST", "/v1/games/:gameId/trades/:tradeId/cancel", async (_req, res, p, _url, body) => {
+      const sim = registry.get(p.gameId);
+      const b = asObject(body);
+      if (typeof b.by !== "string") return send(res, 400, { error: "by (player id) required" });
+      const offer = sim.cancelTrade(p.tradeId, b.by);
+      registry.schedulePersist(p.gameId);
+      send(res, 200, offer);
     }),
 
     route("POST", "/v1/games/:gameId/console/give-all", async (_req, res, p, _url, body) => {
