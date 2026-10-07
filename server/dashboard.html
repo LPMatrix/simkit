@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>simkit — simulation observability</title>
+<style>
+  :root { color-scheme: light dark; --bg:#0d1117; --card:#161b22; --line:#30363d; --txt:#e6edf3; --mut:#8b949e; --acc:#2f81f7; --good:#3fb950; --warn:#d29922; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--txt); }
+  header { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; }
+  header .sub { color:var(--mut); font-size:13px; }
+  main { padding:20px; max-width:1100px; margin:0 auto; display:grid; gap:16px; }
+  .row { display:grid; gap:16px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--mut); margin:0 0 10px; }
+  .big { font-size:24px; font-weight:700; }
+  .mut { color:var(--mut); font-size:12px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  button, input, select { font: inherit; }
+  button { background:var(--acc); color:#fff; border:0; border-radius:8px; padding:8px 12px; cursor:pointer; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--txt); }
+  button:disabled { opacity:.5; }
+  input, select { background:#0d1117; color:var(--txt); border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  #log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; max-height:260px; overflow:auto; white-space:pre-wrap; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:99px; border:1px solid var(--line); font-size:12px; color:var(--mut); }
+</style>
+</head>
+<body>
+<header>
+  <h1>simkit console</h1>
+  <span class="sub">simulation observability + world controls</span>
+  <span style="flex:1"></span>
+  <select id="game"></select>
+  <input id="apiKey" placeholder="x-api-key (simkit-dev)" size="22" />
+  <span class="pill" id="clock">—</span>
+</header>
+<main>
+  <div class="row" id="stats"></div>
+
+  <div class="card">
+    <h2>Simulation console</h2>
+    <div class="toolbar">
+      <button data-act="advance" data-days="1">Advance 1 day</button>
+      <button data-act="advance" data-days="7">Advance 1 week</button>
+      <button data-act="give" class="ghost">Give all ₦10,000</button>
+      <button data-act="reset" class="ghost">Reset economy</button>
+      <input id="triggerId" placeholder="event id (fuel-crisis)" size="22" />
+      <button data-act="trigger" class="ghost">Trigger event</button>
+      <input id="priceKey" placeholder="price key" size="12" />
+      <input id="priceMult" placeholder="×1.2" size="6" />
+      <button data-act="price" class="ghost">Set price</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card">
+      <h2>Players</h2>
+      <div class="toolbar" style="margin-bottom:8px">
+        <input id="newName" placeholder="New player name" />
+        <button data-act="create">Create</button>
+      </div>
+      <table><thead><tr><th>Name</th><th>₦</th><th>Loc</th><th>Job</th><th>Do</th></tr></thead><tbody id="players"></tbody></table>
+    </div>
+    <div class="card">
+      <h2>World</h2>
+      <div class="mut" id="world"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Event log (realtime via SSE)</h2>
+    <div id="log"></div>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { game: "lagos-life" };
+const base = () => "";
+const key = () => $("apiKey").value || localStorage.getItem("simkit-key") || "simkit-dev";
+$("apiKey").value = localStorage.getItem("simkit-key") || "simkit-dev";
+$("apiKey").addEventListener("change", () => localStorage.setItem("simkit-key", $("apiKey").value));
+
+async function api(path, opts = {}) {
+  const res = await fetch(base() + path, {
+    ...opts,
+    headers: { "content-type": "application/json", "x-api-key": key(), ...(opts.headers || {}) },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+async function refreshGames() {
+  const { games } = await api("/v1/games");
+  const sel = $("game");
+  sel.innerHTML = "";
+  for (const g of games) {
+    const o = document.createElement("option");
+    o.value = g.gameId; o.textContent = `${g.gameId} (day ${g.day})`;
+    sel.appendChild(o);
+  }
+  if (games.length && ![...sel.options].some(o => o.value === state.game)) state.game = games[0].gameId;
+  sel.value = state.game;
+}
+
+async function refresh() {
+  const g = state.game;
+  const [info, players, log] = await Promise.all([
+    api(`/v1/games/${g}`),
+    api(`/v1/games/${g}/players`),
+    api(`/v1/games/${g}/log?limit=80`),
+  ]);
+  $("clock").textContent = `Day ${info.clock.day} ${info.clock.weekday} ${info.clock.time}`;
+  $("stats").innerHTML = [
+    ["Players", info.stats.totalPlayers],
+    ["Total ₦", Number(info.stats.totalCurrency).toLocaleString()],
+    ["Avg wealth", Math.round(info.stats.avgWealth).toLocaleString()],
+    ["Avg level", info.stats.avgLevel.toFixed(1)],
+  ].map(([k, v]) => `<div class="card"><h2>${k}</h2><div class="big">${v}</div></div>`).join("")
+    + `<div class="card"><h2>Events</h2><div class="mut">${Object.entries(info.stats.eventCounts).map(([k, v]) => `${k}: ${v}`).join("<br>") || "none yet"}</div></div>`;
+  $("players").innerHTML = players.players.map(p =>
+    `<tr><td>${p.name}</td><td>${p.wallet.balance.toLocaleString()}</td><td>${p.locationId}</td><td>${p.jobId || "—"}</td>
+     <td><button class="ghost" data-p="${p.id}" data-do="work">work</button>
+     <button class="ghost" data-p="${p.id}" data-do="sleep">sleep</button></td></tr>`).join("");
+  $("world").innerHTML =
+    `<b>Locations</b><br>${info.world.map(l => `${l.id} — ₦${l.travelCost} / ${l.travelTimeMinutes}m`).join("<br>")}<br><br>` +
+    `<b>Jobs</b><br>${info.jobs.map(j => `${j.id} — ₦${j.salary}/mo`).join("<br>")}`;
+  $("log").textContent = log.log.map(e => `day${e.day} ${e.time} ${e.type}${e.playerId ? " " + e.playerId : ""}`).join("\n");
+}
+
+function connectStream() {
+  if (window._es) window._es.close();
+  const es = new EventSource(`/v1/games/${state.game}/stream?apiKey=${encodeURIComponent(key())}`);
+  window._es = es;
+  es.onmessage = () => refresh().catch(() => {});
+}
+
+$("game").addEventListener("change", () => { state.game = $("game").value; connectStream(); refresh().catch(alert); });
+
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  const g = state.game;
+  try {
+    if (b.dataset.act === "advance") await api(`/v1/games/${g}/advance`, { method: "POST", body: JSON.stringify({ days: Number(b.dataset.days) }) });
+    if (b.dataset.act === "give") await api(`/v1/games/${g}/console/give-all`, { method: "POST", body: JSON.stringify({ amount: 10000 }) });
+    if (b.dataset.act === "reset") await api(`/v1/games/${g}/console/reset-economy`, { method: "POST" });
+    if (b.dataset.act === "trigger") await api(`/v1/games/${g}/console/trigger`, { method: "POST", body: JSON.stringify({ eventId: $("triggerId").value || "fuel-crisis" }) });
+    if (b.dataset.act === "price") await api(`/v1/games/${g}/console/set-price`, { method: "POST", body: JSON.stringify({ key: $("priceKey").value || "transport", multiplier: Number($("priceMult").value) || 1.2 }) });
+    if (b.dataset.act === "create") {
+      const name = $("newName").value || `Player${Math.floor(Math.random() * 999)}`;
+      await api(`/v1/games/${g}/players`, { method: "POST", body: JSON.stringify({ name }) });
+      $("newName").value = "";
+    }
+    if (b.dataset.do) await api(`/v1/games/${g}/players/${b.dataset.p}/actions`, { method: "POST", body: JSON.stringify({ action: b.dataset.do }) });
+    await refresh();
+  } catch (err) { alert(err.message); }
+});
+
+(async () => { try { await refreshGames(); connectStream(); await refresh(); setInterval(refresh, 8000); } catch (e) { document.body.insertAdjacentHTML("beforeend", `<p style="padding:20px">API error: ${e.message}. Start server with <code>npm run server</code>.</p>`); } })();
+</script>
+</body>
+</html>

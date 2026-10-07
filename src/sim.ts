@@ -22,6 +22,7 @@ export interface SimSnapshot {
   log: SimLogEvent[];
   priceModifiers: Record<string, number>;
   playerSeq: number;
+  worldVersion: string;
 }
 
 export type SimEventHandler = (event: SimLogEvent) => void;
@@ -48,6 +49,8 @@ export class Sim {
   events = new EventEngine();
   store: Store;
   priceModifiers: Record<string, number> = {};
+  /** Current versioned-world tag (see WorldCatalog). Defaults to "v1". */
+  worldVersion = "v1";
 
   private playersMap = new Map<string, Player>();
   private playerSeq = 0;
@@ -236,6 +239,28 @@ export class Sim {
     },
   };
 
+  // ---- marketplace packs (see packs/) ----
+  /**
+   * Install a marketplace pack (world, jobs, or system) into this Sim.
+   * Packs only add/upsert definitions — they never touch players.
+   */
+  use(pack: {
+    locations?: (string | LocationDef)[];
+    jobs?: JobDef[];
+    events?: EventDefinition[];
+  }): void {
+    for (const loc of pack.locations ?? []) this.world.define(loc);
+    for (const job of pack.jobs ?? []) this.jobs.define(job);
+    for (const ev of pack.events ?? []) {
+      try {
+        this.events.define(ev);
+      } catch {
+        // Already installed: skip.
+      }
+    }
+    this.emit("PACK_INSTALLED", {});
+  }
+
   // ---- observability (dashboard primitives) ----
   stats(): {
     totalPlayers: number;
@@ -281,6 +306,7 @@ export class Sim {
       log: [...this.log],
       priceModifiers: { ...this.priceModifiers },
       playerSeq: this.playerSeq,
+      worldVersion: this.worldVersion,
     };
   }
 
@@ -297,6 +323,7 @@ export class Sim {
     sim.log = [...snapshot.log];
     sim.seq = snapshot.log.length;
     sim.playerSeq = snapshot.playerSeq;
+    sim.worldVersion = snapshot.worldVersion ?? "v1";
     sim.playersMap.clear();
     for (const pj of snapshot.players) {
       const p = Player.fromJSON(pj);

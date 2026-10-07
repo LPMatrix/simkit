@@ -60,4 +60,49 @@ counts for replay and debugging.
 npm run build
 npm test
 npm run example
+npm run server   # API + dashboard on http://localhost:8787
 ```
+
+## Backend platform (Phase 2)
+
+Zero-dependency Node HTTP API with API-key auth, multi-game registry,
+JSON-file snapshot persistence (Postgres-ready `Store` interface), and
+SSE realtime event streams.
+
+```bash
+npm run server
+# env: PORT=8787 SIMKIT_API_KEYS=key1,key2 SIMKIT_DATA_DIR=./.simkit-data
+# auth off for local dev: SIMKIT_NO_AUTH=1
+```
+
+```bash
+curl -H "x-api-key: simkit-dev" http://localhost:8787/v1/games
+curl -H "x-api-key: simkit-dev" -H "content-type: application/json" \
+  -d '{"name":"Mubaraq","location":"yaba"}' \
+  http://localhost:8787/v1/games/lagos-life/players
+```
+
+Key routes: `POST /v1/games`, `GET /v1/games/:id/stats`,
+player `.../players` + `.../players/:pid/actions` (`work|travel|sleep|eat|accept-job|quit`),
+`POST .../advance`, `GET .../log`, `GET .../stream` (SSE),
+`POST .../console/{give-all,set-price,trigger,reset-economy}`,
+`GET .../snapshot`.
+
+Remote SDK mirrors the local ergonomics over HTTP:
+
+```ts
+import { SimClient } from "simkit";
+
+const client = new SimClient({ baseUrl: "http://localhost:8787", apiKey: "simkit-dev", gameId: "lagos-life" });
+const player = await client.createPlayer({ name: "Mubaraq" });
+await client.acceptJob(player.id, "danfo-driver");
+await client.work(player.id);
+await client.advance(7);
+```
+
+## Dashboard (Phase 3)
+
+`GET /dashboard` serves the simulation observability UI: game selector,
+economy cards, player table with work/sleep actions, world listing,
+realtime event log (SSE), and console controls (advance day/week,
+give-all, trigger event, set price, reset economy).
