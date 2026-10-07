@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
-import { Sim, type SimSnapshot } from "../src/index.js";
+import { Sim, type GameConfigFile, type SimSnapshot } from "../src/index.js";
 import { WorldCatalog } from "../src/worlds.js";
 import { Meter } from "./metering.js";
 import { SqliteGameStore } from "./sqlite.js";
@@ -169,6 +169,21 @@ export class GameRegistry {
       events: opts.events as never,
     });
     this.games.set(sim.gameId, sim);
+    await this.persist(sim.gameId);
+    return sim;
+  }
+
+  /** Create a game from a declarative YAML/JSON config file (§6). */
+  async createFromConfig(cfg: GameConfigFile): Promise<Sim> {
+    if (this.games.has(cfg.gameId)) {
+      const err = new Error(`Game already exists: ${cfg.gameId}`) as Error & { status?: number };
+      err.status = 409;
+      throw err;
+    }
+    const { createSimulationFromConfig } = await import("../src/index.js");
+    const { sim, worldVersions } = createSimulationFromConfig(cfg);
+    this.games.set(sim.gameId, sim);
+    for (const v of worldVersions) this.catalog.define(sim.gameId, v);
     await this.persist(sim.gameId);
     return sim;
   }

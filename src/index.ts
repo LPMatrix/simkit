@@ -16,6 +16,8 @@ export { ItemCatalog, Inventory, type Item, type ItemDef } from "./inventory.js"
 export { BusinessManager, type Business, type BusinessDef } from "./businesses.js";
 export { MissionManager, type Mission, type MissionDef, type MissionGoal, type MissionState } from "./missions.js";
 export { TradeLedger, type TradeOffer, type TradeStatus, type TradeTerms } from "./trades.js";
+export { buildLeaderboard, LEADERBOARD_METRICS, type LeaderboardEntry, type LeaderboardMetric } from "./leaderboards.js";
+export { parseGameConfig, createSimulationFromConfig, loadGameConfigFile, type GameConfigFile } from "./config.js";
 export { PACKS, listPacks, installPack, type Pack } from "./packs/index.js";
 export type {
   SimConfig,

@@ -1,6 +1,6 @@
 {
   "name": "simkit",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "description": "Simulation primitives for life / economy / city sim games. Build Nigerian life sims in days, not months.",
   "type": "module",
   "main": "./dist/index.js",
@@ -32,9 +32,13 @@
   ],
   "license": "MIT",
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.6.4",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "js-yaml": "^5.4.3"
   }
 }

@@ -9,6 +9,15 @@ const sqlitePath = process.env.SIMKIT_SQLITE_PATH; // e.g. "./simkit.db" — dur
 const registry = new GameRegistry(sqlitePath ? null : dataDir, { sqlitePath });
 await registry.init();
 
+// Boot an extra game from a declarative config file: SIMKIT_CONFIG=./examples/ilorin-life.yaml
+if (process.env.SIMKIT_CONFIG) {
+  const { loadGameConfigFile } = await import("../src/index.js");
+  const cfg = await loadGameConfigFile(process.env.SIMKIT_CONFIG);
+  if (!registry.has(cfg.gameId)) {
+    await registry.createFromConfig(cfg);
+  }
+}
+
 const server = createHttpServer(registry, authFromEnv());
 server.listen(port, () => {
   console.log(`simkit server on http://localhost:${port}`);

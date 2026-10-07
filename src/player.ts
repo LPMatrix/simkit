@@ -18,6 +18,7 @@ export interface PlayerJSON {
   relationships: Record<string, number>;
   missions: Record<string, MissionState>;
   lastActiveDay: number;
+  visits: Record<string, number>;
 }
 
 export interface PlayerHooks {
@@ -54,6 +55,8 @@ export class Player {
   relationships = new Relationships();
   missions: Record<string, MissionState> = {};
   lastActiveDay = 1;
+  /** Travel arrivals per location — drives "most visited" stats. */
+  visits: Record<string, number> = {};
 
   /** Wired by Sim; not serialized. */
   hooks!: PlayerHooks;
@@ -94,6 +97,7 @@ export class Player {
     if (cost > 0) this.wallet.debit(cost, this.stamp(`travel:${this.locationId}->${toId}`));
     this.hooks.advanceMinutes(minutes);
     this.locationId = toId;
+    this.visits[toId] = (this.visits[toId] ?? 0) + 1;
     this.adjustEnergy(-5);
     this.hooks.log("PLAYER_TRAVELED", { to: toId, cost, minutes }, this.id);
   }
@@ -206,6 +210,7 @@ export class Player {
       relationships: this.relationships.toJSON(),
       missions: JSON.parse(JSON.stringify(this.missions)) as Record<string, MissionState>,
       lastActiveDay: this.lastActiveDay,
+      visits: { ...this.visits },
     };
   }
 
@@ -221,6 +226,7 @@ export class Player {
     p.relationships = Relationships.fromJSON(json.relationships);
     p.missions = { ...(json.missions ?? {}) };
     p.lastActiveDay = json.lastActiveDay ?? 1;
+    p.visits = { ...(json.visits ?? {}) };
     return p;
   }
 }

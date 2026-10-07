@@ -47,6 +47,25 @@
     <div class="mut" id="retention">—</div>
   </div>
 
+  <div class="row">
+    <div class="card">
+      <h2>Leaderboard</h2>
+      <div class="toolbar" style="margin-bottom:8px">
+        <select id="boardMetric">
+          <option value="wealth">Wealth</option>
+          <option value="level">Level</option>
+          <option value="xp">XP</option>
+          <option value="reputation">Reputation</option>
+        </select>
+      </div>
+      <table><thead><tr><th>#</th><th>Name</th><th>Value</th></tr></thead><tbody id="board"></tbody></table>
+    </div>
+    <div class="card">
+      <h2>Economy</h2>
+      <div class="mut" id="econ">—</div>
+    </div>
+  </div>
+
   <div class="card">
     <h2>Simulation console</h2>
     <div class="toolbar">
@@ -115,11 +134,13 @@ async function refreshGames() {
 
 async function refresh() {
   const g = state.game;
-  const [info, players, log, analytics] = await Promise.all([
+  const [info, players, log, analytics, board, economy] = await Promise.all([
     api(`/v1/games/${g}`),
     api(`/v1/games/${g}/players`),
     api(`/v1/games/${g}/log?limit=80`),
     api(`/v1/games/${g}/analytics`),
+    api(`/v1/games/${g}/leaderboards?metric=${$("boardMetric").value}&limit=10`),
+    api(`/v1/games/${g}/economy`),
   ]);
   $("clock").textContent = `Day ${info.clock.day} ${info.clock.weekday} ${info.clock.time}`;
   $("stats").innerHTML = [
@@ -137,6 +158,13 @@ async function refresh() {
     `<b>Locations</b><br>${info.world.map(l => `${l.id} — ₦${l.travelCost} / ${l.travelTimeMinutes}m`).join("<br>")}<br><br>` +
     `<b>Jobs</b><br>${info.jobs.map(j => `${j.id} — ₦${j.salary}/mo`).join("<br>")}`;
   $("log").textContent = log.log.map(e => `day${e.day} ${e.time} ${e.type}${e.playerId ? " " + e.playerId : ""}`).join("\n");
+  $("board").innerHTML = board.entries.map(e =>
+    `<tr><td>${e.rank}</td><td>${e.name}</td><td>${e.value.toLocaleString()}</td></tr>`).join("") || `<tr><td colspan="3">no players yet</td></tr>`;
+  $("econ").innerHTML =
+    `Inflation: <b>${economy.inflationPct}%</b> · Issued ₦${Number(economy.issued).toLocaleString()} · Destroyed ₦${Number(economy.destroyed).toLocaleString()}<br><br>` +
+    `<b>Top jobs</b><br>${economy.topJobs.map(j => `${j.name} — ₦${j.dailyPay.toLocaleString()}/day`).join("<br>")}<br><br>` +
+    `<b>Locations</b><br>${economy.locations.map(l => `${l.name}: ${l.residents} here, ${l.visits} visits`).join("<br>")}<br><br>` +
+    `<b>Activities</b><br>${economy.activities.map(a => `${a.type}: ${a.count}`).join("<br>") || "none yet"}`;
   const r = analytics.retention;
   $("retention").textContent =
     `Active 7d: ${r.active7d}/${r.total} · Active 30d: ${r.active30d}/${r.total} · ` +
@@ -168,6 +196,7 @@ function connectStream() {
 }
 
 $("game").addEventListener("change", () => { state.game = $("game").value; connectStream(); refresh().catch(alert); });
+$("boardMetric").addEventListener("change", () => refresh().catch(() => {}));
 
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("button");

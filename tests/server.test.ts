@@ -179,6 +179,27 @@ describe("API server", () => {
     expect(afterB.wallet.balance).toBe(50000 - 1000 + 2000);
   });
 
+  it("leaderboard, rank and economy endpoints", async () => {
+    const headers = { "x-api-key": apiKey, "content-type": "application/json" };
+    const client = new SimClient({ baseUrl, apiKey, gameId: "test-lagos" });
+    const p = await client.createPlayer({ name: "Champ", location: "yaba" });
+
+    const board = await client.leaderboard("wealth", 5);
+    expect(board.metric).toBe("wealth");
+    expect(board.entries.length).toBeGreaterThan(0);
+    expect(board.entries[0].rank).toBe(1);
+
+    const rank = await client.rank(p.id, "wealth");
+    expect(rank.total).toBeGreaterThanOrEqual(1);
+
+    const bad = await fetch(`${baseUrl}/v1/games/test-lagos/leaderboards?metric=vibes`, { headers });
+    expect(bad.status).toBe(400);
+
+    const econ = await client.economy();
+    expect(econ).toMatchObject({ inflationPct: expect.any(Number) });
+    expect(Array.isArray(econ.topJobs)).toBe(true);
+  });
+
   it("world migration endpoint bumps rules safely", async () => {
     const headers = { "x-api-key": apiKey, "content-type": "application/json" };
     const bad = await fetch(`${baseUrl}/v1/games/test-lagos/migrate`, {
@@ -200,5 +221,40 @@ describe("API server", () => {
     const info = await (await fetch(`${baseUrl}/v1/games/test-lagos`, { headers })).json();
     expect(info.worldVersion).toBe("v2");
     expect(info.jobs.find((j: { id: string }) => j.id === "danfo-driver").salary).toBe(300000);
+  });
+
+  it("creates games from config text and reports activation", async () => {
+    const headers = { "x-api-key": apiKey, "content-type": "application/json" };
+    const yaml = "gameId: cfg-game\npacks: [world-ilorin]\njobs:\n  - id: rider\n    salary: 60000\n";
+    const created = await fetch(`${baseUrl}/v1/games/from-config`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text: yaml }),
+    });
+    expect(created.status).toBe(201);
+
+    const dupe = await fetch(`${baseUrl}/v1/games/from-config`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text: yaml }),
+    });
+    expect(dupe.status).toBe(409);
+
+    const invalid = await fetch(`${baseUrl}/v1/games/from-config`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text: "- just\n- a\n- list" }),
+    });
+    expect(invalid.status).toBe(400);
+
+    const fresh = await (await fetch(`${baseUrl}/v1/games/cfg-game/activation`, { headers })).json();
+    expect(fresh.playable).toBe(false);
+
+    const client = new SimClient({ baseUrl, apiKey, gameId: "cfg-game" });
+    const p = await client.createPlayer({ name: "Cfg" });
+    await client.acceptJob(p.id, "rider");
+    await client.work(p.id);
+    const done = await client.activation();
+    expect(done.playable).toBe(true);
   });
 });

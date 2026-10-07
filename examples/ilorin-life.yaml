@@ -1,0 +1,33 @@
+# Ilorin Life — a whole game in a config file.
+# Boot it: SIMKIT_CONFIG=./examples/ilorin-life.yaml npm run server
+gameId: ilorin-life
+currency: NGN
+seed: 7
+startingCash: 30000
+startingLocation: tanke
+
+packs:
+  - world-ilorin
+  - jobs-nigerian-core
+  - system-university
+
+jobs:
+  - id: okada-rider
+    name: Okada Rider
+    salary: 90000
+    workingHours: 10
+    energyCost: 35
+
+events:
+  - id: harmattan
+    name: Harmattan Dust
+    probability: 0.04
+
+worldVersions:
+  - version: v1
+  - version: v2
+    jobs:
+      - id: okada-rider
+        salary: 110000
+        workingHours: 10
+        energyCost: 35

@@ -4,7 +4,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GameRegistry } from "./registry.js";
 import { isAuthorized, type AuthConfig } from "./auth.js";
-import { installPack, listPacks } from "../src/index.js";
+import { installPack, listPacks, parseGameConfig, LEADERBOARD_METRICS, type LeaderboardMetric } from "../src/index.js";
 
 type Handler = (req: IncomingMessage, res: ServerResponse, params: Record<string, string>, url: URL, body: unknown) => void | Promise<void>;
 
@@ -151,6 +151,20 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
       send(res, 201, { gameId: sim.gameId, currency: sim.currency });
     }),
 
+    route("POST", "/v1/games/from-config", async (_req, res, _p, _url, body) => {
+      const b = asObject(body);
+      if (typeof b.text !== "string") return send(res, 400, { error: "text (YAML/JSON config) required" });
+      let cfg;
+      try {
+        cfg = parseGameConfig(b.text);
+      } catch (err) {
+        return send(res, 400, { error: (err as Error).message });
+      }
+      const sim = await registry.createFromConfig(cfg);
+      ensureSubscribed(sim.gameId);
+      send(res, 201, { gameId: sim.gameId, currency: sim.currency });
+    }),
+
     route("GET", "/v1/games/:gameId", (_req, res, p) => {
       const sim = registry.get(p.gameId);
       ensureSubscribed(p.gameId);
@@ -181,11 +195,38 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
       send(res, 200, registry.get(p.gameId).analytics());
     }),
 
+    route("GET", "/v1/games/:gameId/economy", (_req, res, p) => {
+      send(res, 200, registry.get(p.gameId).economics());
+    }),
+
+    route("GET", "/v1/games/:gameId/activation", (_req, res, p) => {
+      send(res, 200, registry.get(p.gameId).activation());
+    }),
+
+    route("GET", "/v1/games/:gameId/leaderboards", (_req, res, p, url) => {
+      const metric = (url.searchParams.get("metric") ?? "wealth") as LeaderboardMetric;
+      if (!LEADERBOARD_METRICS.includes(metric)) {
+        return send(res, 400, { error: `metric must be one of: ${LEADERBOARD_METRICS.join("|")}` });
+      }
+      const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") ?? 10)));
+      send(res, 200, { metric, entries: registry.get(p.gameId).leaderboard(metric, limit) });
+    }),
+
+    route("GET", "/v1/games/:gameId/players/:playerId/rank", (_req, res, p, url) => {
+      const sim = registry.get(p.gameId);
+      sim.players.get(p.playerId); // 404 on unknown player
+      const metric = (url.searchParams.get("metric") ?? "wealth") as LeaderboardMetric;
+      if (!LEADERBOARD_METRICS.includes(metric)) {
+        return send(res, 400, { error: `metric must be one of: ${LEADERBOARD_METRICS.join("|")}` });
+      }
+      send(res, 200, { metric, ...sim.rankOf(p.playerId, metric) });
+    }),
+
     route("GET", "/v1/packs", (_req, res, _p, url) => {
       const kind = url.searchParams.get("kind");
       send(res, 200, {
         packs: listPacks(
-          kind === "world" || kind === "jobs" || kind === "system" || kind === "characters" ? kind : undefined,
+          kind === "world" || kind === "jobs" || kind === "system" || kind === "characters" || kind === "assets" ? kind : undefined,
         ),
       });
     }),

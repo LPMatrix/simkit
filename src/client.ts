@@ -184,6 +184,22 @@ export class SimClient {
     return this.req(`/v1/games/${this.gameId}/analytics`);
   }
 
+  economy(): Promise<Record<string, unknown>> {
+    return this.req(`/v1/games/${this.gameId}/economy`);
+  }
+
+  activation(): Promise<{ playable: boolean; milestones: { id: string; label: string; reached: boolean; day: number | null }[] }> {
+    return this.req(`/v1/games/${this.gameId}/activation`);
+  }
+
+  leaderboard(metric = "wealth", limit = 10): Promise<{ metric: string; entries: { rank: number; playerId: string; name: string; value: number }[] }> {
+    return this.req(`/v1/games/${this.gameId}/leaderboards?metric=${metric}&limit=${limit}`);
+  }
+
+  rank(playerId: string, metric = "wealth"): Promise<{ metric: string; rank: number; total: number }> {
+    return this.req(`/v1/games/${this.gameId}/players/${playerId}/rank?metric=${metric}`);
+  }
+
   advance(days = 1): Promise<{ day: number; fired: string[] }> {
     return this.req(`/v1/games/${this.gameId}/advance`, {
       method: "POST",

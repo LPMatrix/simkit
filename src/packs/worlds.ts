@@ -5,10 +5,10 @@ import type { MissionDef } from "../missions.js";
 import type { NpcDef } from "../npcs.js";
 import type { JobDef, LocationDef } from "../types.js";
 
-/** A marketplace pack: installable world, jobs, system, or characters. */
+/** A marketplace pack: installable world, jobs, system, characters, or assets. */
 export interface Pack {
   id: string;
-  kind: "world" | "jobs" | "system" | "characters";
+  kind: "world" | "jobs" | "system" | "characters" | "assets";
   name: string;
   description: string;
   locations?: (string | LocationDef)[];

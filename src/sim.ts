@@ -10,6 +10,7 @@ import { ItemCatalog, type ItemDef } from "./inventory.js";
 import { BusinessManager, type BusinessDef } from "./businesses.js";
 import { MissionManager, type MissionDef } from "./missions.js";
 import { TradeLedger, type TradeOffer, type TradeTerms } from "./trades.js";
+import { buildLeaderboard, LEADERBOARD_METRICS, type LeaderboardEntry, type LeaderboardMetric } from "./leaderboards.js";
 import type { NpcDef } from "./npcs.js";
 import type { CreatePlayerOptions, JobDef, LocationDef, SimConfig } from "./types.js";
 import type { SimLogEvent } from "./events.js";
@@ -296,6 +297,109 @@ export class Sim {
       },
       eventCounts: Object.fromEntries(this.events.triggerCounts),
     };
+  }
+
+  // ---- leaderboards ----
+  leaderboard(metric: LeaderboardMetric = "wealth", limit = 10): LeaderboardEntry[] {
+    if (!LEADERBOARD_METRICS.includes(metric)) {
+      throw new Error(`Unknown leaderboard metric: ${metric}`);
+    }
+    return buildLeaderboard([...this.playersMap.values()], metric, limit);
+  }
+
+  /** Dense rank of one player (1 = best), or null when unranked. */
+  rankOf(playerId: string, metric: LeaderboardMetric = "wealth"): { rank: number; total: number } | null {
+    const board = this.leaderboard(metric, Number.MAX_SAFE_INTEGER);
+    const entry = board.find((e) => e.playerId === playerId);
+    return entry ? { rank: entry.rank, total: board.length } : null;
+  }
+
+  // ---- economy observability (§7-8) ----
+  economics(): {
+    issued: number;
+    destroyed: number;
+    net: number;
+    inflationPct: number;
+    topJobs: { id: string; name: string; dailyPay: number }[];
+    topAssets: { id: string; name: string; price: number }[];
+    locations: { id: string; name: string; residents: number; visits: number }[];
+    activities: { type: string; count: number }[];
+  } {
+    const players = [...this.playersMap.values()];
+    let issued = 0;
+    let destroyed = 0;
+    for (const p of players) {
+      for (const tx of p.wallet.history) {
+        if (tx.type === "credit") issued += tx.amount;
+        else destroyed += tx.amount;
+      }
+    }
+    const mods = Object.values(this.priceModifiers);
+    const inflationPct =
+      mods.length === 0 ? 0 : Math.round(((mods.reduce((s, m) => s + m, 0) / mods.length - 1) * 100) * 10) / 10;
+
+    const topJobs = this.jobs
+      .list()
+      .map((j) => ({ id: j.id, name: j.name, dailyPay: this.jobs.dailyPay(j.id) }))
+      .sort((a, b) => b.dailyPay - a.dailyPay)
+      .slice(0, 5);
+
+    const topAssets = [
+      ...this.items.list().map((i) => ({ id: i.id, name: i.name, price: i.price })),
+      ...this.businesses.list().map((b) => ({ id: b.id, name: b.name, price: b.cost })),
+    ]
+      .sort((a, b) => b.price - a.price)
+      .slice(0, 5);
+
+    const locations = this.world.list().map((loc) => ({
+      id: loc.id,
+      name: loc.name,
+      residents: players.filter((p) => p.locationId === loc.id).length,
+      visits: players.reduce((s, p) => s + (p.visits[loc.id] ?? 0), 0),
+    })).sort((a, b) => b.visits - a.visits);
+
+    const activityCounts = new Map<string, number>();
+    for (const e of this.log) {
+      if (!e.type.startsWith("PLAYER_")) continue;
+      activityCounts.set(e.type, (activityCounts.get(e.type) ?? 0) + 1);
+    }
+    const activities = [...activityCounts.entries()]
+      .map(([type, count]) => ({ type, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    return { issued, destroyed, net: issued - destroyed, inflationPct, topJobs, topAssets, locations, activities };
+  }
+
+  // ---- activation funnel (§22 North Star: games reaching playable state) ----
+  /**
+   * Where this game sits on the road to playable: created → first player →
+   * first job → first paycheck → first trade. Derived from the event log,
+   * so it works for every game with zero extra state.
+   */
+  activation(): { playable: boolean; milestones: { id: string; label: string; reached: boolean; day: number | null }[] } {
+    const firstDayOf = (type: string): number | null => {
+      const e = this.log.find((l) => l.type === type);
+      return e ? e.day : null;
+    };
+    const firstTradeDay = (): number | null => {
+      const e = this.log.find((l) => l.type === "PLAYER_TRANSFERRED" || l.type === "TRADE_ACCEPTED");
+      return e ? e.day : null;
+    };
+    const milestones = [
+      { id: "created", label: "Game created", reached: true, day: 1 },
+      { id: "first-player", label: "First player", reached: false, day: firstDayOf("PLAYER_CREATED") },
+      { id: "first-job", label: "First job accepted", reached: false, day: firstDayOf("JOB_ACCEPTED") },
+      { id: "first-paycheck", label: "First paycheck earned", reached: false, day: firstDayOf("PLAYER_WORKED") },
+      { id: "first-trade", label: "First player trade", reached: false, day: firstTradeDay() },
+    ];
+    for (const m of milestones) {
+      if (m.day != null) {
+        m.reached = true;
+      }
+    }
+    const playable = milestones.find((m) => m.id === "first-paycheck")?.reached ?? false;
+    return { playable, milestones };
   }
 
   /** Manually trigger an event (simulation console). */
@@ -674,6 +778,7 @@ export function createSimulation(opts: {
   currency?: string;
   seed?: number | string;
   startingCash?: number;
+  startingLocation?: string;
   locations?: (string | LocationDef)[];
   jobs?: JobDef[];
   events?: EventDefinition[];
@@ -689,6 +794,7 @@ export function createSimulation(opts: {
       currency: opts.currency ?? "NGN",
       seed: opts.seed,
       startingCash: opts.startingCash,
+      startingLocation: opts.startingLocation,
     },
     opts.store,
   );
