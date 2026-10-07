@@ -1,6 +1,8 @@
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { Sim, type SimSnapshot } from "../src/index.js";
+import { WorldCatalog } from "../src/worlds.js";
+import { Meter } from "./metering.js";
 
 /** Seed content for the default game so the API boots with a playable world. */
 export function lagosSeed(): {
@@ -43,6 +45,10 @@ export function lagosSeed(): {
 export class GameRegistry {
   private games = new Map<string, Sim>();
   private saveTimers = new Map<string, NodeJS.Timeout>();
+  /** Usage metering per game (plan tiers). */
+  readonly meter = new Meter();
+  /** Versioned world definitions per game. */
+  readonly catalog = new WorldCatalog();
 
   constructor(private dataDir: string | null) {}
 
@@ -70,11 +76,27 @@ export class GameRegistry {
     }
     if (this.games.size === 0) {
       const seed = lagosSeed();
-      const { createSimulation } = await import("../src/index.js");
+      const { createSimulation, installPack } = await import("../src/index.js");
       const sim = createSimulation(seed);
+      installPack(sim, "characters-lagos");
       this.games.set(sim.gameId, sim);
       await this.persist(sim.gameId);
     }
+    this.seedVersionDefs();
+  }
+
+  /**
+   * Demo version history for lagos-life: v1 is the boot world,
+   * v2 bumps danfo pay ₦150k → ₦200k and adds a minimum-wage event.
+   */
+  private seedVersionDefs(): void {
+    if (this.catalog.list("lagos-life").length > 0) return;
+    this.catalog.define("lagos-life", { version: "v1" });
+    this.catalog.define("lagos-life", {
+      version: "v2",
+      jobs: [{ id: "danfo-driver", salary: 200000, workingHours: 10, energyCost: 35 }],
+      events: [{ id: "minimum-wage", name: "Minimum Wage Review", probability: 0.02 }],
+    });
   }
 
   list(): Sim[] {

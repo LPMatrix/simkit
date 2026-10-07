@@ -6,11 +6,12 @@ import { SimClient } from "../src/index.js";
 
 describe("API server", () => {
   let server: Server;
+  let registry: GameRegistry;
   let baseUrl: string;
   const apiKey = "test-key";
 
   beforeAll(async () => {
-    const registry = new GameRegistry(null); // no disk persistence in tests
+    registry = new GameRegistry(null); // no disk persistence in tests
     await registry.init();
     await registry.create({
       gameId: "test-lagos",
@@ -19,6 +20,11 @@ describe("API server", () => {
       locations: [{ id: "yaba", travelCost: 500, travelTimeMinutes: 30 }],
       jobs: [{ id: "danfo-driver", salary: 150000, workingHours: 8 }],
       events: [{ id: "fuel-crisis", probability: 0 }],
+    });
+    registry.catalog.define("test-lagos", { version: "v1" });
+    registry.catalog.define("test-lagos", {
+      version: "v2",
+      jobs: [{ id: "danfo-driver", salary: 300000, workingHours: 8 }],
     });
     server = createHttpServer(registry, { apiKeys: new Set([apiKey]), required: true });
     await new Promise<void>((resolve) => server.listen(0, resolve));
@@ -63,5 +69,102 @@ describe("API server", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("simkit console");
+  });
+
+  it("play serves the reference game", async () => {
+    const res = await fetch(`${baseUrl}/play`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Lagos Life Mini");
+  });
+
+  it("packs install over HTTP and usage reflects plan", async () => {
+    const headers = { "x-api-key": apiKey, "content-type": "application/json" };
+    const packs = await (await fetch(`${baseUrl}/v1/packs?kind=world`, { headers })).json();
+    expect(packs.packs.map((p: { id: string }) => p.id)).toContain("world-lagos");
+
+    const install = await fetch(`${baseUrl}/v1/games/test-lagos/packs/system-nysc/install`, {
+      method: "POST",
+      headers,
+    });
+    expect(install.status).toBe(200);
+
+    const info = await (await fetch(`${baseUrl}/v1/games/test-lagos`, { headers })).json();
+    expect(info.jobs.map((j: { id: string }) => j.id)).toContain("corper");
+
+    const usage = await (await fetch(`${baseUrl}/v1/games/test-lagos/usage`, { headers })).json();
+    expect(usage.plan).toBe("free");
+    expect(usage.usage.apiCalls).toBeGreaterThan(0);
+
+    const plan = await (
+      await fetch(`${baseUrl}/v1/games/test-lagos/plan`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ tier: "developer" }),
+      })
+    ).json();
+    expect(plan.plan).toBe("developer");
+  });
+
+  it("social + economy endpoints: talk, items, transfer, business, missions", async () => {
+    const headers = { "x-api-key": apiKey, "content-type": "application/json" };
+    const post = (path: string, body?: unknown) =>
+      fetch(`${baseUrl}${path}`, { method: "POST", headers, body: body ? JSON.stringify(body) : undefined });
+    const client = new SimClient({ baseUrl, apiKey, gameId: "test-lagos" });
+
+    await post("/v1/games/test-lagos/packs/characters-lagos/install");
+    const a = await client.createPlayer({ name: "Ada", location: "yaba" });
+    const b = await client.createPlayer({ name: "Bola", location: "yaba" });
+
+    const talk = await (await post(`/v1/games/test-lagos/players/${a.id}/talk`, { npcId: "mama-put" })).json();
+    expect(talk.score).toBe(6);
+    expect(typeof talk.line).toBe("string");
+
+    const withAmala = await client.buy(a.id, "amala", 1);
+    expect(withAmala.inventory.items.amala).toBe(1);
+
+    const moved = await client.transfer(a.id, b.id, 1000);
+    expect(moved.from.wallet.balance).toBe(a.wallet.balance - 1000 - 1500);
+    expect(moved.to.wallet.balance).toBe(50000 + 1000);
+
+    await post("/v1/games/test-lagos/businesses", { id: "kiosk", cost: 5000, dailyIncome: 500 });
+    await client.buyBusiness(a.id, "kiosk");
+    await client.advance(2);
+    const { payout } = await client.collectIncome(a.id, "kiosk");
+    expect(payout).toBe(1000);
+
+    await post("/v1/games/test-lagos/missions", {
+      id: "daily-grind",
+      goal: { type: "earn", target: 5000 },
+      reward: 500,
+    });
+    await client.acceptMission(a.id, "daily-grind");
+    await client.acceptJob(a.id, "danfo-driver");
+    await client.work(a.id);
+    const claimed = await client.claimMission(a.id, "daily-grind");
+    expect(claimed.reward).toBe(500);
+  });
+
+  it("world migration endpoint bumps rules safely", async () => {
+    const headers = { "x-api-key": apiKey, "content-type": "application/json" };
+    const bad = await fetch(`${baseUrl}/v1/games/test-lagos/migrate`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ target: "v9" }),
+    });
+    expect(bad.status).toBe(404);
+
+    const res = await fetch(`${baseUrl}/v1/games/test-lagos/migrate`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ target: "v2" }),
+    });
+    expect(res.status).toBe(200);
+    const result = await res.json();
+    expect(result).toMatchObject({ from: "v1", to: "v2", worldVersion: "v2" });
+
+    const info = await (await fetch(`${baseUrl}/v1/games/test-lagos`, { headers })).json();
+    expect(info.worldVersion).toBe("v2");
+    expect(info.jobs.find((j: { id: string }) => j.id === "danfo-driver").salary).toBe(300000);
   });
 });

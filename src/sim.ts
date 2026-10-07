@@ -5,6 +5,11 @@ import { EventEngine, type EventDefinition } from "./events.js";
 import { Player, type PlayerJSON } from "./player.js";
 import { SeededRng } from "./rng.js";
 import { InMemoryStore, type Store } from "./store.js";
+import { NpcManager } from "./npcs.js";
+import { ItemCatalog, type ItemDef } from "./inventory.js";
+import { BusinessManager, type BusinessDef } from "./businesses.js";
+import { MissionManager, type MissionDef } from "./missions.js";
+import type { NpcDef } from "./npcs.js";
 import type { CreatePlayerOptions, JobDef, LocationDef, SimConfig } from "./types.js";
 import type { SimLogEvent } from "./events.js";
 
@@ -18,6 +23,10 @@ export interface SimSnapshot {
   world: ReturnType<World["toJSON"]>;
   jobs: ReturnType<JobManager["toJSON"]>;
   events: EventDefinition[];
+  npcs: ReturnType<NpcManager["toJSON"]>;
+  items: ReturnType<ItemCatalog["toJSON"]>;
+  businesses: ReturnType<BusinessManager["toJSON"]>;
+  missions: ReturnType<MissionManager["toJSON"]>;
   eventRuntime: ReturnType<EventEngine["toJSON"]>;
   log: SimLogEvent[];
   priceModifiers: Record<string, number>;
@@ -47,6 +56,10 @@ export class Sim {
   world = new World();
   jobs = new JobManager();
   events = new EventEngine();
+  npcs = new NpcManager();
+  items = new ItemCatalog();
+  businesses = new BusinessManager();
+  missions = new MissionManager();
   store: Store;
   priceModifiers: Record<string, number> = {};
   /** Current versioned-world tag (see WorldCatalog). Defaults to "v1". */
@@ -176,6 +189,7 @@ export class Sim {
       jobEnergyCost: (jobId: string) => this.jobs.get(jobId).energyCost,
       jobWorkingHours: (jobId: string) => this.jobs.get(jobId).workingHours,
       jobRequirements: (jobId: string) => this.jobs.get(jobId).requirements,
+      getItem: (id: string) => this.items.get(id),
       log: (type, data, playerId) => {
         this.emit(type, data, playerId);
       },
@@ -248,6 +262,10 @@ export class Sim {
     locations?: (string | LocationDef)[];
     jobs?: JobDef[];
     events?: EventDefinition[];
+    npcs?: NpcDef[];
+    items?: ItemDef[];
+    businesses?: BusinessDef[];
+    missions?: MissionDef[];
   }): void {
     for (const loc of pack.locations ?? []) this.world.define(loc);
     for (const job of pack.jobs ?? []) this.jobs.define(job);
@@ -258,7 +276,145 @@ export class Sim {
         // Already installed: skip.
       }
     }
+    for (const npc of pack.npcs ?? []) this.npcs.define(npc);
+    for (const item of pack.items ?? []) this.items.define(item);
+    for (const biz of pack.businesses ?? []) this.businesses.define(biz);
+    for (const mission of pack.missions ?? []) this.missions.define(mission);
     this.emit("PACK_INSTALLED", {});
+  }
+
+  // ---- social: NPCs, relationships ----
+  /**
+   * Talk to an NPC. Requires being in the same location.
+   * Returns the (seeded, deterministic) dialogue line.
+   */
+  talk(playerId: string, npcId: string): { line: string; score: number; level: string } {
+    const player = this.players.get(playerId);
+    const npc = this.npcs.get(npcId);
+    if (npc.location && npc.location !== player.locationId) {
+      throw new Error(`${npc.name} is at ${npc.location} — travel there first`);
+    }
+    const before = player.relationships.level(npcId);
+    const line = this.rng.pick(npc.dialogue);
+    this.clock.advanceMinutes(15);
+    const score = player.relationships.adjust(npcId, 6);
+    const level = player.relationships.level(npcId);
+    this.emit("PLAYER_TALKED", { npcId, line, score }, playerId);
+    if (level !== before) {
+      player.adjustReputation(5);
+      this.emit("RELATIONSHIP_LEVEL_UP", { npcId, level }, playerId);
+    }
+    return { line, score, level };
+  }
+
+  // ---- multiplayer: player-to-player transfers ----
+  /** Atomic P2P payment. Creates paired debit/credit transactions. */
+  transfer(fromId: string, toId: string, amount: number, reason = "transfer"): void {
+    if (fromId === toId) throw new Error("Cannot transfer to yourself");
+    if (!(amount > 0)) throw new Error("Transfer amount must be positive");
+    const from = this.players.get(fromId);
+    const to = this.players.get(toId);
+    const day = this.clock.day;
+    const time = this.clock.timeLabel;
+    from.wallet.debit(amount, { reason: `${reason}:to:${toId}`, day, time });
+    to.wallet.credit(amount, { reason: `${reason}:from:${fromId}`, day, time });
+    this.emit("WALLET_DEBITED", { amount, reason }, fromId);
+    this.emit("WALLET_CREDITED", { amount, reason }, toId);
+    this.emit("PLAYER_TRANSFERRED", { from: fromId, to: toId, amount }, fromId);
+  }
+
+  // ---- businesses ----
+  buyBusiness(playerId: string, businessId: string): void {
+    const player = this.players.get(playerId);
+    const biz = this.businesses.get(businessId);
+    if (biz.ownerId) throw new Error(`${biz.name} is already owned`);
+    player.wallet.debit(biz.cost, {
+      reason: `business:${businessId}`,
+      day: this.clock.day,
+      time: this.clock.timeLabel,
+    });
+    biz.ownerId = playerId;
+    biz.lastCollectedDay = this.clock.day;
+    this.emit("BUSINESS_BOUGHT", { businessId, cost: biz.cost }, playerId);
+  }
+
+  /** Collect accrued daily income since last collection. */
+  collectIncome(playerId: string, businessId: string): number {
+    const player = this.players.get(playerId);
+    const biz = this.businesses.get(businessId);
+    if (biz.ownerId !== playerId) throw new Error(`You don't own ${biz.name}`);
+    const days = this.clock.day - biz.lastCollectedDay;
+    if (days <= 0) throw new Error(`${biz.name} has nothing to collect yet — come back tomorrow`);
+    const payout = biz.dailyIncome * days;
+    biz.lastCollectedDay = this.clock.day;
+    player.wallet.credit(payout, {
+      reason: `business-income:${businessId}`,
+      day: this.clock.day,
+      time: this.clock.timeLabel,
+    });
+    this.emit("BUSINESS_INCOME", { businessId, days, payout }, playerId);
+    return payout;
+  }
+
+  // ---- missions ----
+  acceptMission(playerId: string, missionId: string): void {
+    const player = this.players.get(playerId);
+    this.missions.get(missionId);
+    const state = (player.missions[missionId] ??= { accepted: false, claimed: false });
+    if (state.accepted) throw new Error("Mission already accepted");
+    state.accepted = true;
+    this.emit("MISSION_ACCEPTED", { missionId }, playerId);
+  }
+
+  missionProgress(playerId: string, missionId: string): { current: number; target: number; done: boolean } {
+    const player = this.players.get(playerId);
+    const mission = this.missions.get(missionId);
+    const g = mission.goal;
+    let current = 0;
+    let target = 1;
+    switch (g.type) {
+      case "earn":
+        current = player.wallet.totalEarned();
+        target = g.target;
+        break;
+      case "wealth":
+        current = player.wallet.balance;
+        target = g.target;
+        break;
+      case "level":
+        current = player.progression.level;
+        target = g.target;
+        break;
+      case "relationship":
+        current = player.relationships.score(g.npc);
+        target = g.target;
+        break;
+      case "own":
+        current = player.inventory.count(g.item);
+        target = g.count;
+        break;
+    }
+    return { current, target, done: current >= target };
+  }
+
+  /** Claim a completed mission: cash reward + XP. */
+  claimMission(playerId: string, missionId: string): number {
+    const player = this.players.get(playerId);
+    const mission = this.missions.get(missionId);
+    const state = player.missions[missionId];
+    if (!state?.accepted) throw new Error("Mission not accepted yet");
+    if (state.claimed) throw new Error("Mission reward already claimed");
+    const { done } = this.missionProgress(playerId, missionId);
+    if (!done) throw new Error("Mission goal not complete yet");
+    state.claimed = true;
+    player.wallet.credit(mission.reward, {
+      reason: `mission:${missionId}`,
+      day: this.clock.day,
+      time: this.clock.timeLabel,
+    });
+    player.progression.addXp(mission.xp ?? 20);
+    this.emit("MISSION_COMPLETED", { missionId, reward: mission.reward }, playerId);
+    return mission.reward;
   }
 
   // ---- observability (dashboard primitives) ----
@@ -302,6 +458,10 @@ export class Sim {
       world: this.world.toJSON(),
       jobs: this.jobs.toJSON(),
       events: this.events.list(),
+      npcs: this.npcs.toJSON(),
+      items: this.items.toJSON(),
+      businesses: this.businesses.toJSON(),
+      missions: this.missions.toJSON(),
       eventRuntime: this.events.toJSON(),
       log: [...this.log],
       priceModifiers: { ...this.priceModifiers },
@@ -319,6 +479,10 @@ export class Sim {
     sim.clock = GameClock.fromJSON(snapshot.clock);
     sim.world = World.fromJSON(snapshot.world);
     sim.jobs = JobManager.fromJSON(snapshot.jobs);
+    sim.npcs = NpcManager.fromJSON(snapshot.npcs ?? []);
+    sim.items = ItemCatalog.fromJSON(snapshot.items ?? []);
+    sim.businesses = BusinessManager.fromJSON(snapshot.businesses ?? []);
+    sim.missions = MissionManager.fromJSON(snapshot.missions ?? []);
     sim.priceModifiers = { ...snapshot.priceModifiers };
     sim.log = [...snapshot.log];
     sim.seq = snapshot.log.length;
@@ -350,6 +514,10 @@ export function createSimulation(opts: {
   locations?: (string | LocationDef)[];
   jobs?: JobDef[];
   events?: EventDefinition[];
+  npcs?: NpcDef[];
+  items?: ItemDef[];
+  businesses?: BusinessDef[];
+  missions?: MissionDef[];
   store?: Store;
 }): Sim {
   const sim = new Sim(
@@ -364,5 +532,9 @@ export function createSimulation(opts: {
   for (const loc of opts.locations ?? []) sim.world.define(loc);
   for (const job of opts.jobs ?? []) sim.jobs.define(job);
   for (const ev of opts.events ?? []) sim.events.define(ev);
+  for (const npc of opts.npcs ?? []) sim.npcs.define(npc);
+  for (const item of opts.items ?? []) sim.items.define(item);
+  for (const biz of opts.businesses ?? []) sim.businesses.define(biz);
+  for (const mission of opts.missions ?? []) sim.missions.define(mission);
   return sim;
 }

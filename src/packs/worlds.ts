@@ -1,15 +1,23 @@
+import type { BusinessDef } from "../businesses.js";
 import type { EventDefinition } from "../events.js";
+import type { ItemDef } from "../inventory.js";
+import type { MissionDef } from "../missions.js";
+import type { NpcDef } from "../npcs.js";
 import type { JobDef, LocationDef } from "../types.js";
 
-/** A marketplace pack: installable world, jobs, or system. */
+/** A marketplace pack: installable world, jobs, system, or characters. */
 export interface Pack {
   id: string;
-  kind: "world" | "jobs" | "system";
+  kind: "world" | "jobs" | "system" | "characters";
   name: string;
   description: string;
   locations?: (string | LocationDef)[];
   jobs?: JobDef[];
   events?: EventDefinition[];
+  npcs?: NpcDef[];
+  items?: ItemDef[];
+  businesses?: BusinessDef[];
+  missions?: MissionDef[];
 }
 
 export const WORLD_LAGOS: Pack = {

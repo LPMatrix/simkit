@@ -2,9 +2,10 @@ import type { Sim } from "../sim.js";
 import { WORLD_ABUJA, WORLD_ILORIN, WORLD_LAGOS, type Pack } from "./worlds.js";
 import { JOBS_NIGERIAN_CORE } from "./jobs.js";
 import { SYSTEM_MARKET, SYSTEM_NYSC, SYSTEM_UNIVERSITY } from "./systems.js";
+import { CHARACTERS_LAGOS } from "./characters.js";
 
 export type { Pack };
-export { WORLD_ABUJA, WORLD_ILORIN, WORLD_LAGOS, JOBS_NIGERIAN_CORE, SYSTEM_MARKET, SYSTEM_NYSC, SYSTEM_UNIVERSITY };
+export { WORLD_ABUJA, WORLD_ILORIN, WORLD_LAGOS, JOBS_NIGERIAN_CORE, SYSTEM_MARKET, SYSTEM_NYSC, SYSTEM_UNIVERSITY, CHARACTERS_LAGOS };
 
 /** The marketplace shelf: every installable pack, by id. */
 export const PACKS: Record<string, Pack> = {
@@ -15,6 +16,7 @@ export const PACKS: Record<string, Pack> = {
   [SYSTEM_NYSC.id]: SYSTEM_NYSC,
   [SYSTEM_UNIVERSITY.id]: SYSTEM_UNIVERSITY,
   [SYSTEM_MARKET.id]: SYSTEM_MARKET,
+  [CHARACTERS_LAGOS.id]: CHARACTERS_LAGOS,
 };
 
 export function listPacks(kind?: Pack["kind"]): Pack[] {

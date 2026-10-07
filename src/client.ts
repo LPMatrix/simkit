@@ -93,6 +93,66 @@ export class SimClient {
     return this.action(playerId, "accept-job", { jobId }).then((r) => r.player);
   }
 
+  async talk(playerId: string, npcId: string): Promise<{ line: string; score: number; level: string; player: RemotePlayer }> {
+    return this.req(`/v1/games/${this.gameId}/players/${playerId}/talk`, {
+      method: "POST",
+      body: JSON.stringify({ npcId }),
+    });
+  }
+
+  async buy(playerId: string, itemId: string, qty = 1): Promise<RemotePlayer> {
+    const r = await this.req<{ player: RemotePlayer }>(`/v1/games/${this.gameId}/players/${playerId}/buy`, {
+      method: "POST",
+      body: JSON.stringify({ itemId, qty }),
+    });
+    return r.player;
+  }
+
+  async use(playerId: string, itemId: string): Promise<RemotePlayer> {
+    const r = await this.req<{ player: RemotePlayer }>(`/v1/games/${this.gameId}/players/${playerId}/use`, {
+      method: "POST",
+      body: JSON.stringify({ itemId }),
+    });
+    return r.player;
+  }
+
+  async transfer(fromId: string, to: string, amount: number): Promise<{ from: RemotePlayer; to: RemotePlayer }> {
+    return this.req(`/v1/games/${this.gameId}/players/${fromId}/transfer`, {
+      method: "POST",
+      body: JSON.stringify({ to, amount }),
+    });
+  }
+
+  async buyBusiness(playerId: string, businessId: string): Promise<RemotePlayer> {
+    const r = await this.req<{ player: RemotePlayer }>(
+      `/v1/games/${this.gameId}/players/${playerId}/businesses/${businessId}/buy`,
+      { method: "POST" },
+    );
+    return r.player;
+  }
+
+  async collectIncome(playerId: string, businessId: string): Promise<{ payout: number; player: RemotePlayer }> {
+    return this.req(`/v1/games/${this.gameId}/players/${playerId}/businesses/${businessId}/collect`, {
+      method: "POST",
+    });
+  }
+
+  async missions(playerId: string): Promise<{ missions: unknown[] }> {
+    return this.req(`/v1/games/${this.gameId}/players/${playerId}/missions`);
+  }
+
+  async acceptMission(playerId: string, missionId: string): Promise<unknown> {
+    return this.req(`/v1/games/${this.gameId}/players/${playerId}/missions/${missionId}/accept`, {
+      method: "POST",
+    });
+  }
+
+  async claimMission(playerId: string, missionId: string): Promise<{ reward: number; player: RemotePlayer }> {
+    return this.req(`/v1/games/${this.gameId}/players/${playerId}/missions/${missionId}/claim`, {
+      method: "POST",
+    });
+  }
+
   advance(days = 1): Promise<{ day: number; fired: string[] }> {
     return this.req(`/v1/games/${this.gameId}/advance`, {
       method: "POST",

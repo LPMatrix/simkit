@@ -10,6 +10,11 @@ export { SeededRng, hashSeedString } from "./rng.js";
 export { InMemoryStore, type Store } from "./store.js";
 export { SimClient, type SimClientOptions, type RemotePlayer } from "./client.js";
 export { WorldCatalog, type WorldVersionDef, type MigrateOptions } from "./worlds.js";
+export { NpcManager, type Npc, type NpcDef } from "./npcs.js";
+export { Relationships } from "./relationships.js";
+export { ItemCatalog, Inventory, type Item, type ItemDef } from "./inventory.js";
+export { BusinessManager, type Business, type BusinessDef } from "./businesses.js";
+export { MissionManager, type Mission, type MissionDef, type MissionGoal, type MissionState } from "./missions.js";
 export { PACKS, listPacks, installPack, type Pack } from "./packs/index.js";
 export type {
   SimConfig,

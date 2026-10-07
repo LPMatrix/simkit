@@ -12,5 +12,6 @@ const server = createHttpServer(registry, authFromEnv());
 server.listen(port, () => {
   console.log(`simkit server on http://localhost:${port}`);
   console.log(`dashboard: http://localhost:${port}/dashboard`);
+  console.log(`play: http://localhost:${port}/play`);
   console.log(`games: ${(registry.list().map((g) => g.gameId) ?? []).join(", ")}`);
 });

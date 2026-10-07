@@ -4,6 +4,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GameRegistry } from "./registry.js";
 import { isAuthorized, type AuthConfig } from "./auth.js";
+import { installPack, listPacks } from "../src/index.js";
 
 type Handler = (req: IncomingMessage, res: ServerResponse, params: Record<string, string>, url: URL, body: unknown) => void | Promise<void>;
 
@@ -156,10 +157,17 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
       send(res, 200, {
         gameId: sim.gameId,
         currency: sim.currency,
+        worldVersion: sim.worldVersion,
+        versions: registry.catalog.list(p.gameId),
+        plan: registry.meter.plan(p.gameId),
         clock: { day: sim.clock.day, weekday: sim.clock.weekday, time: sim.clock.timeLabel },
         world: sim.world.list(),
         jobs: sim.jobs.list(),
         events: sim.events.list(),
+        npcs: sim.npcs.list(),
+        items: sim.items.list(),
+        businesses: sim.businesses.list(),
+        missions: sim.missions.list(),
         priceModifiers: sim.priceModifiers,
         stats: sim.stats(),
       });
@@ -169,8 +177,54 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
       send(res, 200, registry.get(p.gameId).stats());
     }),
 
+    route("GET", "/v1/packs", (_req, res, _p, url) => {
+      const kind = url.searchParams.get("kind");
+      send(res, 200, {
+        packs: listPacks(
+          kind === "world" || kind === "jobs" || kind === "system" || kind === "characters" ? kind : undefined,
+        ),
+      });
+    }),
+
+    route("POST", "/v1/games/:gameId/packs/:packId/install", async (_req, res, p) => {
+      const sim = registry.get(p.gameId);
+      const pack = installPack(sim, p.packId);
+      registry.schedulePersist(p.gameId);
+      send(res, 200, { ok: true, pack: { id: pack.id, name: pack.name, kind: pack.kind } });
+    }),
+
+    route("GET", "/v1/games/:gameId/usage", (_req, res, p) => {
+      const sim = registry.get(p.gameId);
+      send(res, 200, registry.meter.report(p.gameId, sim.players.list().length));
+    }),
+
+    route("POST", "/v1/games/:gameId/plan", async (_req, res, p, _url, body) => {
+      registry.get(p.gameId);
+      const b = asObject(body);
+      if (b.tier !== "free" && b.tier !== "developer" && b.tier !== "pro" && b.tier !== "enterprise") {
+        return send(res, 400, { error: "tier must be free|developer|pro|enterprise" });
+      }
+      const tier = registry.meter.setPlan(p.gameId, b.tier);
+      send(res, 200, { ok: true, plan: tier });
+    }),
+
+    route("GET", "/v1/games/:gameId/versions", (_req, res, p) => {
+      const sim = registry.get(p.gameId);
+      send(res, 200, { current: sim.worldVersion, versions: registry.catalog.list(p.gameId) });
+    }),
+
+    route("POST", "/v1/games/:gameId/migrate", async (_req, res, p, _url, body) => {
+      const sim = registry.get(p.gameId);
+      const b = asObject(body);
+      if (typeof b.target !== "string") return send(res, 400, { error: "target (version) required" });
+      const result = registry.catalog.migrate(sim, b.target);
+      registry.schedulePersist(p.gameId);
+      send(res, 200, { ok: true, ...result, worldVersion: sim.worldVersion });
+    }),
+
     route("POST", "/v1/games/:gameId/players", async (_req, res, p, _url, body) => {
       const sim = registry.get(p.gameId);
+      registry.meter.checkPlayerCap(p.gameId, sim.players.list().length);
       const b = asObject(body);
       if (!b.name || typeof b.name !== "string") return send(res, 400, { error: "name is required" });
       const player = await sim.players.create({
@@ -236,7 +290,11 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
       const sim = registry.get(p.gameId);
       const b = asObject(body);
       const days = typeof b.days === "number" ? Math.max(1, Math.min(30, Math.floor(b.days))) : 1;
+      const before = sim.eventLog.length;
       const fired = sim.advanceDays(days);
+      // Metering is post-hoc: exact event counts are random, so the advance
+      // stands and an exceeded quota surfaces as 429 + overage in /usage.
+      registry.meter.recordEvents(p.gameId, sim.eventLog.length - before);
       registry.schedulePersist(p.gameId);
       send(res, 200, { day: sim.clock.day, time: sim.clock.timeLabel, fired });
     }),
@@ -246,6 +304,134 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
       const limit = Math.min(500, Math.max(1, Number(url.searchParams.get("limit") ?? 100)));
       const log = sim.eventLog.slice(-limit);
       send(res, 200, { log });
+    }),
+
+    route("POST", "/v1/games/:gameId/npcs", async (_req, res, p, _url, body) => {
+      const sim = registry.get(p.gameId);
+      const npc = sim.npcs.define(asObject(body) as never);
+      registry.schedulePersist(p.gameId);
+      send(res, 201, npc);
+    }),
+
+    route("POST", "/v1/games/:gameId/items", async (_req, res, p, _url, body) => {
+      const sim = registry.get(p.gameId);
+      const item = sim.items.define(asObject(body) as never);
+      registry.schedulePersist(p.gameId);
+      send(res, 201, item);
+    }),
+
+    route("POST", "/v1/games/:gameId/businesses", async (_req, res, p, _url, body) => {
+      const sim = registry.get(p.gameId);
+      const biz = sim.businesses.define(asObject(body) as never);
+      registry.schedulePersist(p.gameId);
+      send(res, 201, biz);
+    }),
+
+    route("POST", "/v1/games/:gameId/missions", async (_req, res, p, _url, body) => {
+      const sim = registry.get(p.gameId);
+      const mission = sim.missions.define(asObject(body) as never);
+      registry.schedulePersist(p.gameId);
+      send(res, 201, mission);
+    }),
+
+    route("POST", "/v1/games/:gameId/players/:playerId/talk", async (_req, res, p, _url, body) => {      const sim = registry.get(p.gameId);
+      const b = asObject(body);
+      if (typeof b.npcId !== "string") return send(res, 400, { error: "npcId required" });
+      const result = sim.talk(p.playerId, b.npcId);
+      registry.schedulePersist(p.gameId);
+      send(res, 200, { ...result, player: sim.players.get(p.playerId).toJSON() });
+    }),
+
+    route("GET", "/v1/games/:gameId/items", (_req, res, p) => {
+      send(res, 200, { items: registry.get(p.gameId).items.list() });
+    }),
+
+    route("POST", "/v1/games/:gameId/players/:playerId/buy", async (_req, res, p, _url, body) => {
+      const sim = registry.get(p.gameId);
+      const player = sim.players.get(p.playerId);
+      const b = asObject(body);
+      if (typeof b.itemId !== "string") return send(res, 400, { error: "itemId required" });
+      player.buy(b.itemId, typeof b.qty === "number" ? b.qty : 1);
+      registry.schedulePersist(p.gameId);
+      send(res, 200, { player: player.toJSON() });
+    }),
+
+    route("POST", "/v1/games/:gameId/players/:playerId/use", async (_req, res, p, _url, body) => {
+      const sim = registry.get(p.gameId);
+      const player = sim.players.get(p.playerId);
+      const b = asObject(body);
+      if (typeof b.itemId !== "string") return send(res, 400, { error: "itemId required" });
+      player.use(b.itemId);
+      registry.schedulePersist(p.gameId);
+      send(res, 200, { player: player.toJSON() });
+    }),
+
+    route("POST", "/v1/games/:gameId/players/:playerId/sell", async (_req, res, p, _url, body) => {
+      const sim = registry.get(p.gameId);
+      const player = sim.players.get(p.playerId);
+      const b = asObject(body);
+      if (typeof b.itemId !== "string") return send(res, 400, { error: "itemId required" });
+      const gain = player.sell(b.itemId, typeof b.qty === "number" ? b.qty : 1);
+      registry.schedulePersist(p.gameId);
+      send(res, 200, { player: player.toJSON(), gain });
+    }),
+
+    route("POST", "/v1/games/:gameId/players/:playerId/transfer", async (_req, res, p, _url, body) => {
+      const sim = registry.get(p.gameId);
+      const b = asObject(body);
+      if (typeof b.to !== "string" || typeof b.amount !== "number") {
+        return send(res, 400, { error: "to (player id) and amount (number) required" });
+      }
+      sim.transfer(p.playerId, b.to, b.amount, typeof b.reason === "string" ? b.reason : "transfer");
+      registry.schedulePersist(p.gameId);
+      send(res, 200, {
+        from: sim.players.get(p.playerId).toJSON(),
+        to: sim.players.get(b.to).toJSON(),
+      });
+    }),
+
+    route("GET", "/v1/games/:gameId/businesses", (_req, res, p) => {
+      send(res, 200, { businesses: registry.get(p.gameId).businesses.list() });
+    }),
+
+    route("POST", "/v1/games/:gameId/players/:playerId/businesses/:businessId/buy", async (_req, res, p) => {
+      const sim = registry.get(p.gameId);
+      sim.buyBusiness(p.playerId, p.businessId);
+      registry.schedulePersist(p.gameId);
+      send(res, 200, { player: sim.players.get(p.playerId).toJSON() });
+    }),
+
+    route("POST", "/v1/games/:gameId/players/:playerId/businesses/:businessId/collect", async (_req, res, p) => {
+      const sim = registry.get(p.gameId);
+      const payout = sim.collectIncome(p.playerId, p.businessId);
+      registry.schedulePersist(p.gameId);
+      send(res, 200, { payout, player: sim.players.get(p.playerId).toJSON() });
+    }),
+
+    route("GET", "/v1/games/:gameId/players/:playerId/missions", (_req, res, p) => {
+      const sim = registry.get(p.gameId);
+      const player = sim.players.get(p.playerId);
+      send(res, 200, {
+        missions: sim.missions.list().map((m) => ({
+          ...m,
+          state: player.missions[m.id] ?? { accepted: false, claimed: false },
+          progress: sim.missionProgress(p.playerId, m.id),
+        })),
+      });
+    }),
+
+    route("POST", "/v1/games/:gameId/players/:playerId/missions/:missionId/accept", async (_req, res, p) => {
+      const sim = registry.get(p.gameId);
+      sim.acceptMission(p.playerId, p.missionId);
+      registry.schedulePersist(p.gameId);
+      send(res, 200, { ok: true });
+    }),
+
+    route("POST", "/v1/games/:gameId/players/:playerId/missions/:missionId/claim", async (_req, res, p) => {
+      const sim = registry.get(p.gameId);
+      const reward = sim.claimMission(p.playerId, p.missionId);
+      registry.schedulePersist(p.gameId);
+      send(res, 200, { reward, player: sim.players.get(p.playerId).toJSON() });
     }),
 
     route("POST", "/v1/games/:gameId/console/give-all", async (_req, res, p, _url, body) => {
@@ -305,9 +491,13 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
         return;
       }
 
-      // Dashboard (no auth) + static
+      // Dashboard (no auth) + player game (no auth; API calls still need key)
       if (pathname === "/" || pathname === "/dashboard") {
         const html = await readFile(join(here, "dashboard.html"), "utf8").catch(() => fallbackDashboard());
+        return sendHtml(res, html);
+      }
+      if (pathname === "/play") {
+        const html = await readFile(join(here, "play.html"), "utf8").catch(() => fallbackDashboard());
         return sendHtml(res, html);
       }
 
@@ -368,6 +558,7 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
         r.keys.forEach((k, i) => {
           params[k] = decodeURIComponent(m[i + 1]);
         });
+        if (params.gameId) registry.meter.recordApi(params.gameId);
         await r.handler(req, res, params, url, body);
         return;
       }

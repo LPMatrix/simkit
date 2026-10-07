@@ -46,6 +46,21 @@ console.log(sim.stats());
 - **Locations**: world graph with travel cost + time
 - **Events**: declarative, seeded, `probability / cooldown / once / condition / effect`
 - **Progression**: skills, xp/levels, achievements
+- **NPCs + relationships**: colocated `talk()` with seeded dialogue, scores and stranger→family levels
+- **Items + inventory**: `buy / use / sell` with energy/health effects
+- **Businesses**: buy once, collect per-day income
+- **Missions**: earn/wealth/level/relationship/own goals with cash + XP rewards
+- **Multiplayer**: atomic player-to-player `transfer()` with paired transactions
+
+```ts
+sim.talk(player.id, "mama-put");          // { line, score, level }
+player.buy("amala"); player.use("amala"); // inventory + effects
+sim.transfer(ada.id, bola.id, 5000);      // P2P payment
+sim.buyBusiness(player.id, "mama-put-buka");
+sim.collectIncome(player.id, "mama-put-buka"); // per-day accrual
+sim.acceptMission(player.id, "first-100k");
+sim.claimMission(player.id, "first-100k");    // reward + XP
+```
 
 ## Determinism
 
@@ -84,6 +99,10 @@ curl -H "x-api-key: simkit-dev" -H "content-type: application/json" \
 
 Key routes: `POST /v1/games`, `GET /v1/games/:id/stats`,
 player `.../players` + `.../players/:pid/actions` (`work|travel|sleep|eat|accept-job|quit`),
+`.../players/:pid/{talk,buy,use,sell,transfer}`,
+`.../players/:pid/businesses/:bid/{buy,collect}`,
+`.../players/:pid/missions[/:mid/{accept,claim}]`,
+define `POST .../{npcs,items,businesses,missions}`,
 `POST .../advance`, `GET .../log`, `GET .../stream` (SSE),
 `POST .../console/{give-all,set-price,trigger,reset-economy}`,
 `GET .../snapshot`.
@@ -106,3 +125,46 @@ await client.advance(7);
 economy cards, player table with work/sleep actions, world listing,
 realtime event log (SSE), and console controls (advance day/week,
 give-all, trigger event, set price, reset economy).
+
+## Reference game (Phase 4)
+
+`GET /play` serves **Lagos Life Mini**, the player-facing proof that a
+complete game runs on the SDK: name entry, ₦ balance, location, day/time,
+job, energy bar, and [Go to work] [Eat] [Travel] [Sleep] [Take job]
+actions — every tap goes through the API → SDK.
+
+## Marketplace packs
+
+Installable worlds, jobs, and systems — no code required:
+
+```ts
+import { installPack, listPacks } from "simkit";
+
+listPacks("world"); // world-lagos, world-ilorin, world-abuja
+installPack(sim, "jobs-nigerian-core"); // 7 everyday careers
+installPack(sim, "system-nysc");        // allowee + clearance wahala
+installPack(sim, "system-university");  // fees, exams, strike risk
+installPack(sim, "system-market");      // boom, crash, owambe season
+installPack(sim, "characters-lagos");   // 3 NPCs, street food, buka business, first-₦100k mission
+```
+
+Over HTTP: `GET /v1/packs?kind=world`, `POST /v1/games/:id/packs/:packId/install`.
+
+## Versioned worlds
+
+Rule changes ship as world versions; existing players migrate safely:
+
+```ts
+catalog.define("lagos-life", { version: "v2", jobs: [{ id: "danfo-driver", salary: 200000 }] });
+catalog.migrate(sim, "v2"); // salary applies to future work; history untouched
+```
+
+Removed jobs remap holders to a fallback (or they quit gracefully) via
+`removedJobs` + `jobFallback`. HTTP: `GET .../versions`, `POST .../migrate {"target":"v2"}`.
+
+## Plans & metering
+
+Per-game usage against generous tiers (free → $29 developer → $99 pro →
+enterprise custom): `GET .../usage`, `POST .../plan {"tier":"developer"}`.
+Player creation and simulation events enforce caps with `429` + upgrade
+guidance.

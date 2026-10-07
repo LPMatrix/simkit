@@ -1,5 +1,8 @@
 import { Wallet } from "./wallet.js";
 import { Progression, type ProgressionJSON } from "./progression.js";
+import { Inventory, type InventoryJSON, type Item } from "./inventory.js";
+import { Relationships } from "./relationships.js";
+import type { MissionState } from "./missions.js";
 
 export interface PlayerJSON {
   id: string;
@@ -11,6 +14,9 @@ export interface PlayerJSON {
   jobId: string | null;
   wallet: { balance: number; history: Wallet["history"] };
   progression: ProgressionJSON;
+  inventory: InventoryJSON;
+  relationships: Record<string, number>;
+  missions: Record<string, MissionState>;
 }
 
 export interface PlayerHooks {
@@ -23,6 +29,7 @@ export interface PlayerHooks {
   jobWorkingHours: (jobId: string) => number;
   jobRequirements: (jobId: string) => Record<string, number>;
   assertJob: (id: string) => void;
+  getItem: (id: string) => Item;
   log: (type: string, data?: Record<string, unknown>, playerId?: string) => void;
   advanceMinutes: (minutes: number) => void;
 }
@@ -42,6 +49,9 @@ export class Player {
   jobId: string | null = null;
   wallet: Wallet;
   progression = new Progression();
+  inventory = new Inventory();
+  relationships = new Relationships();
+  missions: Record<string, MissionState> = {};
 
   /** Wired by Sim; not serialized. */
   hooks!: PlayerHooks;
@@ -132,6 +142,39 @@ export class Player {
     return pay;
   }
 
+  /** Buy items at catalog price. Costs a little time (shopping). */
+  buy(itemId: string, qty = 1): void {
+    const item = this.hooks.getItem(itemId);
+    if (qty <= 0) throw new Error("Quantity must be positive");
+    this.wallet.debit(item.price * qty, this.stamp(`buy:${itemId}x${qty}`));
+    this.inventory.add(itemId, qty);
+    this.hooks.advanceMinutes(10);
+    this.hooks.log("PLAYER_BOUGHT", { itemId, qty, cost: item.price * qty }, this.id);
+  }
+
+  /** Use one unit: applies its energy/health effects. */
+  use(itemId: string): void {
+    const item = this.hooks.getItem(itemId);
+    this.inventory.remove(itemId, 1);
+    if (item.energy) this.adjustEnergy(item.energy);
+    if (item.health) this.adjustHealth(item.health);
+    this.hooks.log(
+      "PLAYER_USED_ITEM",
+      { itemId, energy: item.energy ?? 0, health: item.health ?? 0 },
+      this.id,
+    );
+  }
+
+  /** Sell back at 50% of catalog price (rounded down). */
+  sell(itemId: string, qty = 1): number {
+    const item = this.hooks.getItem(itemId);
+    this.inventory.remove(itemId, qty);
+    const gain = Math.floor((item.price * qty) / 2);
+    this.wallet.credit(gain, this.stamp(`sell:${itemId}x${qty}`));
+    this.hooks.log("PLAYER_SOLD", { itemId, qty, gain }, this.id);
+    return gain;
+  }
+
   toJSON(): PlayerJSON {
     return {
       id: this.id,
@@ -143,6 +186,9 @@ export class Player {
       jobId: this.jobId,
       wallet: this.wallet.toJSON(),
       progression: this.progression.toJSON(),
+      inventory: this.inventory.toJSON(),
+      relationships: this.relationships.toJSON(),
+      missions: JSON.parse(JSON.stringify(this.missions)) as Record<string, MissionState>,
     };
   }
 
@@ -154,6 +200,9 @@ export class Player {
     p.jobId = json.jobId;
     p.wallet = Wallet.fromJSON(json.wallet);
     p.progression = Progression.fromJSON(json.progression);
+    p.inventory = Inventory.fromJSON(json.inventory);
+    p.relationships = Relationships.fromJSON(json.relationships);
+    p.missions = { ...(json.missions ?? {}) };
     return p;
   }
 }

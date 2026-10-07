@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Lagos Life Mini — powered by simkit</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:#0d1117; color:#e6edf3; display:flex; justify-content:center; }
+  #app { width:100%; max-width:430px; padding:20px 16px 40px; }
+  h1 { font-size:20px; margin:4px 0 2px; }
+  .sub { color:#8b949e; font-size:13px; margin-bottom:16px; }
+  .hud { background:#161b22; border:1px solid #30363d; border-radius:14px; padding:16px; margin-bottom:14px; }
+  .cash { font-size:32px; font-weight:800; }
+  .meta { color:#8b949e; font-size:13px; margin-top:4px; }
+  .bar { height:10px; background:#21262d; border-radius:99px; overflow:hidden; margin-top:10px; }
+  .bar > div { height:100%; background:#3fb950; border-radius:99px; transition:width .3s; }
+  .bar.low > div { background:#d29922; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  button { font:inherit; background:#2f81f7; color:#fff; border:0; border-radius:10px; padding:12px; cursor:pointer; }
+  button.ghost { background:#21262d; color:#e6edf3; border:1px solid #30363d; }
+  button:disabled { opacity:.45; }
+  select, input { font:inherit; width:100%; background:#0d1117; color:#e6edf3; border:1px solid #30363d; border-radius:10px; padding:12px; }
+  .row { display:flex; gap:10px; margin-top:10px; }
+  .row > * { flex:1; }
+  #msg { min-height:22px; font-size:13px; color:#8b949e; margin:12px 0; }
+  #msg b { color:#e6edf3; }
+  label { font-size:12px; color:#8b949e; display:block; margin:12px 0 4px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>Lagos Life Mini</h1>
+  <div class="sub">every tap runs through the simkit SDK</div>
+
+  <div id="login">
+    <label>Your name</label>
+    <input id="name" placeholder="e.g. Adaeze" />
+    <div class="row"><button id="start">Start life in Lagos</button></div>
+  </div>
+
+  <div id="game" style="display:none">
+    <div class="hud">
+      <div class="cash" id="cash">₦0</div>
+      <div class="meta" id="where">—</div>
+      <div class="meta" id="job">Job: none</div>
+      <div class="meta" id="inv">Bag: empty</div>
+      <div class="meta">Energy: <span id="energyTxt">100%</span></div>
+      <div class="bar" id="energyBar"><div style="width:100%"></div></div>
+    </div>
+    <div id="msg"></div>
+    <div class="grid">
+      <button id="work">Go to work</button>
+      <button id="eat" class="ghost">Eat ₦1,500</button>
+      <button id="sleep" class="ghost">Sleep 8h</button>
+      <button id="day" class="ghost">Next day</button>
+    </div>
+    <label>Travel</label>
+    <div class="row"><select id="dest"></select><button id="go" class="ghost">Go</button></div>
+    <label>Talk (same location)</label>
+    <div class="row"><select id="npcSel"></select><button id="talk" class="ghost">Talk</button></div>
+    <label>Work</label>
+    <div class="row"><select id="jobSel"></select><button id="take" class="ghost">Take job</button></div>
+    <div class="row"><button id="quit" class="ghost">Quit job</button><button id="reset" class="ghost">New life</button></div>
+  </div>
+</div>
+<script>
+const GAME = "lagos-life";
+const KEY = "simkit-dev"; // demo key; real games use per-game keys
+const $ = (id) => document.getElementById(id);
+const store = {
+  get pid() { return localStorage.getItem(`lagos-mini:${GAME}`); },
+  set pid(v) { v ? localStorage.setItem(`lagos-mini:${GAME}`, v) : localStorage.removeItem(`lagos-mini:${GAME}`); },
+};
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { ...opts, headers: { "content-type": "application/json", "x-api-key": KEY, ...(opts.headers || {}) } });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+const say = (html) => { $("msg").innerHTML = html; };
+
+function paint(p, info) {
+  $("cash").textContent = "₦" + p.wallet.balance.toLocaleString();
+  $("where").textContent = `${p.locationId} · Day ${info.clock.day} ${info.clock.weekday} ${info.clock.time}`;
+  $("job").textContent = "Job: " + (p.jobId || "none");
+  $("energyTxt").textContent = p.energy + "%";
+  const bar = $("energyBar");
+  bar.firstElementChild.style.width = p.energy + "%";
+  bar.classList.toggle("low", p.energy < 30);
+  $("dest").innerHTML = info.world.map(l => `<option value="${l.id}"${l.id === p.locationId ? " selected" : ""}>${l.name} (₦${l.travelCost})</option>`).join("");
+  $("jobSel").innerHTML = info.jobs.map(j => `<option value="${j.id}"${j.id === p.jobId ? " selected" : ""}>${j.name} (₦${j.salary}/mo)</option>`).join("");
+  const bag = Object.entries(p.inventory.items).map(([id, q]) => `${id}×${q}`).join(", ");
+  $("inv").textContent = "Bag: " + (bag || "empty");
+  const here = (info.npcs || []).filter(n => !n.location || n.location === p.locationId);
+  $("npcSel").innerHTML = here.length
+    ? here.map(n => `<option value="${n.id}">${n.name}</option>`).join("")
+    : `<option value="">No one here — travel!</option>`;
+}
+
+async function refresh() {
+  const info = await api(`/v1/games/${GAME}`);
+  const p = await api(`/v1/games/${GAME}/players/${store.pid}`);
+  paint(p, info);
+  return { p, info };
+}
+
+async function act(action, params = {}) {
+  try {
+    const { player } = await api(`/v1/games/${GAME}/players/${store.pid}/actions`, { method: "POST", body: JSON.stringify({ action, ...params }) });
+    const info = await api(`/v1/games/${GAME}`);
+    paint(player, info);
+    const nice = { work: "Shift done. Pay day is coming.", travel: "You beat traffic (this time).", sleep: "You wake up refreshed.", eat: "Amala hits different." }[action];
+    if (action === "work" || action === "travel" || action === "sleep" || action === "eat") say(nice);
+  } catch (e) { say(`<b>${e.message}</b> — try eating or sleeping first.`); }
+}
+
+$("start").onclick = async () => {
+  const name = $("name").value.trim() || "Player" + Math.floor(Math.random() * 999);
+  try {
+    const p = await api(`/v1/games/${GAME}/players`, { method: "POST", body: JSON.stringify({ name, location: "yaba" }) });
+    store.pid = p.id;
+    $("login").style.display = "none";
+    $("game").style.display = "block";
+    say(`Welcome to Lagos, <b>${p.name}</b>. Pick a job to survive.`);
+    await refresh();
+  } catch (e) { say(`<b>${e.message}</b>`); }
+};
+$("work").onclick = () => act("work");
+$("eat").onclick = () => act("eat");
+$("sleep").onclick = () => act("sleep");
+$("go").onclick = () => act("travel", { to: $("dest").value });
+$("talk").onclick = async () => {
+  const npcId = $("npcSel").value;
+  if (!npcId) return;
+  try {
+    const r = await api(`/v1/games/${GAME}/players/${store.pid}/talk`, { method: "POST", body: JSON.stringify({ npcId }) });
+    const info = await api(`/v1/games/${GAME}`);
+    paint(r.player, info);
+    say(`<b>${r.line}</b> <span style="color:#8b949e">(${r.level})</span>`);
+  } catch (e) { say(`<b>${e.message}</b>`); }
+};
+$("take").onclick = async () => { try { await act("accept-job", { jobId: $("jobSel").value }); say("New hustle secured."); } catch {} };
+$("quit").onclick = async () => { await act("quit-job"); say("You quit. Bold."); };
+$("day").onclick = async () => { await api(`/v1/games/${GAME}/advance`, { method: "POST", body: JSON.stringify({ days: 1 }) }); await refresh(); say("A new day in Lagos."); };
+$("reset").onclick = () => { store.pid = null; location.reload(); };
+
+(async () => { if (store.pid) { try { $("login").style.display = "none"; $("game").style.display = "block"; await refresh(); } catch { store.pid = null; } } })();
+</script>
+</body>
+</html>

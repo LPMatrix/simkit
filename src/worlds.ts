@@ -50,7 +50,9 @@ export class WorldCatalog {
   migrate(sim: Sim, target: string, _opts: MigrateOptions = {}): { from: string; to: string; remapped: number } {
     const list = this.versions.get(sim.gameId) ?? [];
     const targetIdx = list.findIndex((v) => v.version === target);
-    if (targetIdx === -1) throw new Error(`Unknown world version: ${sim.gameId}@${target}`);
+    if (targetIdx === -1) {
+      throw Object.assign(new Error(`Unknown world version: ${sim.gameId}@${target}`), { status: 404 });
+    }
     const currentIdx = list.findIndex((v) => v.version === sim.worldVersion);
     // If current version is unknown to the catalog (e.g. hand-built "v1"
     // world), apply everything up to and including target.
