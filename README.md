@@ -114,7 +114,7 @@ console.log(world.replay({ actorId: alice.id }));     // every action, with its 
 
 **Time.** The world has its own clock. Actions consume game time, and `advanceDays` moves the world forward. Nothing depends on wall-clock time.
 
-**State.** Players, businesses, NPCs, items, and jobs are plain data behind a small API. Money lives in an auditable ledger, where each entry records its reason, time, and the action that caused it.
+**State.** Players, businesses, NPCs, items, and jobs are plain data behind a small API. Any other kind of thing (a course, a vehicle) is an entity: an action can target it with `targetKind`, and the runtime resolves and validates it before any rule runs. Money lives in an auditable ledger, where each entry records its reason, time, and the action that caused it.
 
 **Events.** Declarative world events with probability, cooldown, conditions, and effects. Effects can change prices (`priceModifiers`) that actions apply at execution time. If an effect fails, the tick continues and an `EVENT_EFFECT_FAILED` entry is logged.
 
@@ -145,7 +145,7 @@ SimKit ships these as building blocks. They are generic, not tied to one setting
 | Locations | Location graph with travel cost and time, visit tracking |
 | Needs | Energy and health, restored by sleep, food, and items |
 | Relationships | NPCs with locations, dialogue drawn from the seeded RNG, relationship levels |
-| Businesses | Ownership, daily income, collection |
+| Businesses | Ownership, daily income, collection, hiring employees, payroll |
 | Assets | Items with prices, effects, buying, selling, and trading |
 | Progression | Skills, XP and levels, achievements |
 | Missions | Goals (earn, wealth, level, relationship, ownership) with rewards |
@@ -187,8 +187,8 @@ SimKit is not a generic game backend. Use your existing infrastructure for authe
 
 SimKit is pre-1.0 and evolving in public. The runtime is being tested against different simulation domains to find which abstractions hold. The `experiments/` directory runs three sketches (life, startup, and university worlds) against the public API. Current gaps, found there and tracked below:
 
-- recurring obligations (rent, payroll) are expressed as events, not as schedules
-- there is no generic entity type beyond players, businesses, and NPCs
+- obligations (rent, bills, tuition) are schedules; company payroll stays a manual action
+- generic entities (courses, employees, businesses) can be targeted by actions, and NPCs can act through the same pipeline as players — but only players hold accounts
 - events can only reach a player by id, and their effect context is restricted
 
 ## Roadmap
@@ -196,8 +196,8 @@ SimKit is pre-1.0 and evolving in public. The runtime is being tested against di
 - [x] Actions and rules pipeline with refusals and causal records
 - [x] Deterministic, seeded simulation
 - [x] Replay and explanations (per actor, per day window)
-- [ ] First-class entity and actor model
-- [ ] Recurring schedules (obligations, payroll)
+- [x] First-class entity and actor model
+- [x] Recurring schedules (obligations, payroll)
 - [ ] Composable simulation systems
 - [ ] Causal chains across actions
 - [ ] Population simulation

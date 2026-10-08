@@ -305,4 +305,37 @@ describe("API server", () => {
     const done = await client.activation();
     expect(done.playable).toBe(true);
   });
+
+  it("defines schedules over HTTP and settles them on advance", async () => {
+    const headers = { "x-api-key": apiKey, "content-type": "application/json" };
+    const client = new SimClient({ baseUrl, apiKey, gameId: "test-lagos" });
+    const p = await client.createPlayer({ name: "Tenant", location: "yaba" });
+    const start = p.wallet.balance;
+
+    const created = await client.defineSchedule({
+      id: "rent-http",
+      payer: p.id,
+      amount: 1000,
+      everyDays: 1,
+      reason: "rent",
+    });
+    expect(created).toMatchObject({ id: "rent-http", nextDue: expect.any(Number) });
+
+    const listed = await client.listSchedules();
+    expect(listed.schedules.map((s) => (s as { id: string }).id)).toContain("rent-http");
+
+    await client.advance(1);
+    expect((await client.getPlayer(p.id)).wallet.balance).toBe(start - 1000);
+
+    const bad = await fetch(`${baseUrl}/v1/games/test-lagos/schedules`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ id: "bad", payer: p.id, amount: -5, everyDays: 1 }),
+    });
+    expect(bad.status).toBe(400);
+
+    await client.cancelSchedule("rent-http");
+    await client.advance(2);
+    expect((await client.getPlayer(p.id)).wallet.balance).toBe(start - 1000); // no further charges
+  });
 });

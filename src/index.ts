@@ -14,6 +14,7 @@ export { NpcManager, type Npc, type NpcDef } from "./npcs.js";
 export { Relationships } from "./relationships.js";
 export { ItemCatalog, Inventory, type Item, type ItemDef } from "./inventory.js";
 export { BusinessManager, type Business, type BusinessDef } from "./businesses.js";
+export { defineEmployee, getEmployee, employeesOf, type Employee, type EmployeeDef } from "./employment.js";
 export { MissionManager, type Mission, type MissionDef, type MissionGoal, type MissionState } from "./missions.js";
 export { TradeLedger, type TradeOffer, type TradeStatus, type TradeTerms } from "./trades.js";
 export { buildLeaderboard, LEADERBOARD_METRICS, type LeaderboardEntry, type LeaderboardMetric } from "./leaderboards.js";
@@ -23,6 +24,7 @@ export type { CauseTrace } from "./sim.js";
 export { workAction, CORE_ACTIONS } from "./runtime/core-actions.js";
 export { enrolAction, ENTITY_ACTIONS } from "./runtime/entity-actions.js";
 export { EntityRegistry, type Entity, type EntityDef, type AttributeValue } from "./entities.js";
+export { ScheduleManager, type Schedule, type ScheduleDef, type MissPolicy } from "./schedules.js";
 export { PACKS, listPacks, installPack, type Pack } from "./packs/index.js";
 export type {
   SimConfig,

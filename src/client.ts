@@ -137,6 +137,23 @@ export class SimClient {
     });
   }
 
+  async hire(
+    playerId: string,
+    businessId: string,
+    employee: { id: string; name?: string; wage: number; role?: string },
+  ): Promise<RemotePlayer> {
+    const r = await this.action(playerId, "hire", { target: businessId, ...employee });
+    return r.player;
+  }
+
+  async payroll(
+    playerId: string,
+    businessId: string,
+  ): Promise<{ player: RemotePlayer; total: number; payments: { employeeId: string; amount: number }[] }> {
+    const r = await this.action(playerId, "payroll", { target: businessId });
+    return { player: r.player, ...(r.result as { total: number; payments: { employeeId: string; amount: number }[] }) };
+  }
+
   async missions(playerId: string): Promise<{ missions: unknown[] }> {
     return this.req(`/v1/games/${this.gameId}/players/${playerId}/missions`);
   }
@@ -163,6 +180,23 @@ export class SimClient {
   async listTrades(playerId?: string): Promise<{ trades: Record<string, unknown>[] }> {
     const q = playerId ? `?playerId=${playerId}` : "";
     return this.req(`/v1/games/${this.gameId}/trades${q}`);
+  }
+
+  async listSchedules(): Promise<{ schedules: Record<string, unknown>[] }> {
+    return this.req(`/v1/games/${this.gameId}/schedules`);
+  }
+
+  async defineSchedule(def: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.req(`/v1/games/${this.gameId}/schedules`, {
+      method: "POST",
+      body: JSON.stringify(def),
+    });
+  }
+
+  async cancelSchedule(scheduleId: string): Promise<Record<string, unknown>> {
+    return this.req(`/v1/games/${this.gameId}/schedules/${scheduleId}/cancel`, {
+      method: "POST",
+    });
   }
 
   private async tradeAction(tradeId: string, action: "accept" | "decline" | "cancel", by: string): Promise<Record<string, unknown>> {

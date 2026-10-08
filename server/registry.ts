@@ -152,6 +152,8 @@ export class GameRegistry {
     locations?: (string | { id: string; name?: string; travelCost?: number; travelTimeMinutes?: number })[];
     jobs?: { id: string; name?: string; salary: number; location?: string; workingHours?: number; energyCost?: number; requirements?: Record<string, number> }[];
     events?: { id: string; name?: string; probability: number; once?: boolean; cooldownDays?: number }[];
+    businesses?: { id: string; name?: string; location?: string; cost: number; dailyIncome: number }[];
+    entities?: { id: string; kind: string; name?: string; attributes?: Record<string, number | string | boolean | null> }[];
   }): Promise<Sim> {
     if (this.games.has(opts.gameId)) {
       const err = new Error(`Game already exists: ${opts.gameId}`) as Error & { status?: number };
@@ -167,6 +169,8 @@ export class GameRegistry {
       locations: opts.locations as never,
       jobs: opts.jobs as never,
       events: opts.events as never,
+      businesses: opts.businesses as never,
+      entities: opts.entities as never,
     });
     this.games.set(sim.gameId, sim);
     await this.persist(sim.gameId);

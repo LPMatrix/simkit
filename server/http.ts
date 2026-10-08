@@ -80,7 +80,7 @@ function errStatus(err: unknown): number {
     const s = (err as { status?: unknown }).status;
     if (typeof s === "number") return s;
   }
-  if (err instanceof Error && /Unknown (game|player|location|job|event|item|action|npc|NPC|business|mission|trade|pack)/.test(err.message)) return 404;
+  if (err instanceof Error && /Unknown (game|player|actor|location|job|event|item|action|npc|NPC|business|mission|trade|pack|schedule)/.test(err.message)) return 404;
   if (err instanceof Error && /already exists|does not meet|Insufficient|Too tired|has no job/i.test(err.message)) return 400;
   return 500;
 }
@@ -293,7 +293,8 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
     // Generic action endpoint: { action, ...params }
     route("POST", "/v1/games/:gameId/players/:playerId/actions", async (_req, res, p, _url, body) => {
       const sim = registry.get(p.gameId);
-      sim.players.get(p.playerId); // 404 on unknown player
+      // Any actor: an account-holding player, or an NPC acting on its own.
+      const actor = sim.actorOf(p.playerId); // 404 on unknown actor
       const { action: rawAction, ...inputs } = asObject(body);
       if (typeof rawAction !== "string" || !rawAction) {
         return send(res, 400, { error: "action (string) is required" });
@@ -303,9 +304,10 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
       const actionId = aliases[rawAction] ?? rawAction;
       const value = sim.execute(p.playerId, actionId, inputs);
       const result = actionId === "work" ? { pay: value } : (value ?? null);
-      await sim.players.save(p.playerId).catch(() => {});
+      // NPC actors persist through snapshots, not player accounts.
+      if (sim.isPlayer(p.playerId)) await sim.players.save(p.playerId).catch(() => {});
       registry.schedulePersist(p.gameId);
-      send(res, 200, { player: sim.players.get(p.playerId).toJSON(), result });
+      send(res, 200, { player: actor.toJSON(), result });
     }),
 
     route("POST", "/v1/games/:gameId/advance", async (_req, res, p, _url, body) => {
@@ -330,7 +332,12 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
 
     route("GET", "/v1/games/:gameId/entities", (_req, res, p, url) => {
       const kind = url.searchParams.get("kind") ?? undefined;
-      send(res, 200, { entities: registry.get(p.gameId).entities.list(kind) });
+      const employerId = url.searchParams.get("employerId") ?? undefined;
+      let entities = registry.get(p.gameId).entities.list(kind);
+      if (employerId) {
+        entities = entities.filter((e) => e.kind === "employee" && e.attributes.employerId === employerId);
+      }
+      send(res, 200, { entities });
     }),
 
     route("GET", "/v1/games/:gameId/actions", (_req, res, p) => {
@@ -489,6 +496,24 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
       const reward = sim.claimMission(p.playerId, p.missionId);
       registry.schedulePersist(p.gameId);
       send(res, 200, { reward, player: sim.players.get(p.playerId).toJSON() });
+    }),
+
+    route("GET", "/v1/games/:gameId/schedules", (_req, res, p) => {
+      send(res, 200, { schedules: registry.get(p.gameId).schedules.list() });
+    }),
+
+    route("POST", "/v1/games/:gameId/schedules", async (_req, res, p, _url, body) => {
+      const sim = registry.get(p.gameId);
+      const schedule = sim.schedules.define(asObject(body) as never, sim.clock.day);
+      registry.schedulePersist(p.gameId);
+      send(res, 201, schedule);
+    }),
+
+    route("POST", "/v1/games/:gameId/schedules/:scheduleId/cancel", async (_req, res, p) => {
+      const sim = registry.get(p.gameId);
+      const schedule = sim.schedules.cancel(p.scheduleId);
+      registry.schedulePersist(p.gameId);
+      send(res, 200, schedule);
     }),
 
     route("GET", "/v1/games/:gameId/trades", (_req, res, p, url) => {

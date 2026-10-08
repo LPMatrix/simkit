@@ -40,7 +40,7 @@ Errors are JSON `{ "error": "message" }`:
 | POST | `.../players` | Create a player: `{ name, location?, startingCash? }` |
 | GET | `.../players` | List players |
 | GET | `.../players/:pid` | Player detail |
-| POST | `.../players/:pid/actions` | Run any registered action: `{ action, ...inputs }` |
+| POST | `.../players/:pid/actions` | Run any registered action: `{ action, ...inputs }`. `:pid` is a player id or an NPC id acting on its own; unknown ids return 404 |
 | GET | `...actions` | List registered actions |
 | POST | `.../players/:pid/talk` | Talk to an NPC: `{ npcId }` |
 | POST | `.../players/:pid/buy` | `{ itemId, qty? }` |
@@ -50,7 +50,16 @@ Errors are JSON `{ "error": "message" }`:
 | GET | `.../players/:pid/rank?metric=` | Rank on a leaderboard metric |
 | GET | `.../players/:pid/explain?fromDay=&toDay=` | Money by category over a window |
 
-Action ids for `/actions`: `work`, `travel` (`to`), `sleep` (`hours`), `eat` (`cost`, `energyGain`), `accept-job` (`jobId`), `quit-job`, `buy`, `use`, `sell`, `talk`, `transfer`, `trade-offer`, `trade-accept`, `trade-decline`, `trade-cancel`, `business-buy`, `business-collect`, `mission-accept`, `mission-claim`. The camelCase forms `acceptJob` and `quitJob` are accepted as aliases.
+Action ids for `/actions`: `enrol` (`target`: a course id), `work`, `travel` (`to`), `sleep` (`hours`), `eat` (`cost`, `energyGain`), `accept-job` (`jobId`), `quit-job`, `buy`, `use`, `sell`, `talk`, `transfer`, `trade-offer`, `trade-accept`, `trade-decline`, `trade-cancel`, `business-buy`, `business-collect`, `mission-accept`, `mission-claim`, `hire` (`target`: a business id, plus `id`, `wage`, `name?`, `role?`), `payroll` (`target`: a business id), `settle-obligation` (`scheduleId`). The camelCase forms `acceptJob` and `quitJob` are accepted as aliases.
+
+## Entities
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `.../entities` | Define an entity: `{ kind, id, name?, attributes? }` |
+| GET | `.../entities?kind=&employerId=` | List entities, optionally by kind; `employerId` lists a business's employees |
+
+Actions that target an entity take it as `target` (its id), for example `{ "action": "enrol", "target": "cs101" }`. An unknown id or the wrong kind returns 404.
 
 ## Businesses, missions, trades
 
@@ -67,6 +76,16 @@ Action ids for `/actions`: `work`, `travel` (`to`), `sleep` (`hours`), `eat` (`c
 | POST | `.../trades/:tid/accept` | `{ by }` |
 | POST | `.../trades/:tid/decline` | `{ by }` |
 | POST | `.../trades/:tid/cancel` | `{ by }` |
+
+## Schedules
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `.../schedules` | List schedules with next due dates |
+| POST | `.../schedules` | Define: `{ id, payer, payee?, amount, everyDays, startsOn?, reason?, onMiss? }` (`onMiss`: `skip`, `retry`, or `default`) |
+| POST | `.../schedules/:sid/cancel` | Cancel a schedule |
+
+Schedules settle automatically once per game day through `settle-obligation`. Misses emit `OBLIGATION_MISSED` (plus `OBLIGATION_DEFAULTED` when a `default` policy cancels); both appear in replay as refused actions.
 
 ## Definitions
 

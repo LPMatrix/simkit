@@ -18,6 +18,7 @@ import { ActionRefused, invalidInput, type ActionDef, type CauseRecord } from ".
 import { CORE_ACTIONS } from "./runtime/core-actions.js";
 import { ENTITY_ACTIONS } from "./runtime/entity-actions.js";
 import { EntityRegistry, type Entity, type EntityDef } from "./entities.js";
+import { ScheduleManager, type Schedule, type ScheduleDef } from "./schedules.js";
 import { SIM_ACTIONS } from "./runtime/sim-actions.js";
 import type { Transaction } from "./wallet.js";
 
@@ -52,6 +53,9 @@ export interface SimSnapshot {
   causes?: CauseRecord[];
   causeSeq?: number;
   entities?: Entity[];
+  schedules?: Schedule[];
+  /** Runtime state of NPCs that have acted. Absent on old snapshots. */
+  npcActors?: PlayerJSON[];
 }
 
 export type SimEventHandler = (event: SimLogEvent) => void;
@@ -89,7 +93,8 @@ export class Sim {
   events = new EventEngine();
   npcs = new NpcManager();
   items = new ItemCatalog();
-  businesses = new BusinessManager();
+  /** Typed view over the entity registry: every business is a `business` entity. */
+  businesses!: BusinessManager;
   missions = new MissionManager();
   trades = new TradeLedger();
   store: Store;
@@ -113,6 +118,8 @@ export class Sim {
   private activeCause: string | undefined;
   /** Generic simulated things that are not players (courses, vehicles, ...). */
   entities = new EntityRegistry();
+  /** Recurring obligations settled once per game day through the pipeline. */
+  schedules = new ScheduleManager();
 
   constructor(config: SimConfig, store?: Store) {
     this.gameId = config.gameId;
@@ -122,6 +129,7 @@ export class Sim {
     this.store = store ?? new InMemoryStore();
     if (config.startingLocation) this.world.define(config.startingLocation);
     this.wirePlayerFactory(config);
+    this.businesses = new BusinessManager(this.entities);
     for (const action of [...CORE_ACTIONS, ...SIM_ACTIONS, ...ENTITY_ACTIONS]) this.defineAction(action);
   }
 
@@ -193,7 +201,6 @@ export class Sim {
     },
 
     list: (): Player[] => [...this.playersMap.values()],
-
     save: async (id: string): Promise<void> => {
       const p = this.players.get(id);
       await this.store.savePlayer(p.toJSON());
@@ -208,6 +215,44 @@ export class Sim {
       return player;
     },
   };
+
+  /**
+   * NPC actors: runtime state for NPCs that act. An NPC definition (name,
+   * home location, dialogue) is static config; the first time an NPC id is
+   * used as an actor, a participant state is created for it — same shape and
+   * pipeline as a player — and kept here, separate from player accounts.
+   * NPC actors are excluded from player listings, analytics, leaderboards,
+   * and usage metering, which all read `playersMap`.
+   */
+  private npcActors = new Map<string, Player>();
+
+  /**
+   * Resolve any actor: an account-holding player first, otherwise the NPC's
+   * runtime state (created lazily from its definition). Unknown ids throw
+   * `Unknown actor` (HTTP 404). Player ids win on collision.
+   */
+  actorOf(id: string): Player {
+    const player = this.playersMap.get(id);
+    if (player) return player;
+    const npc = this.npcActors.get(id);
+    if (npc) return npc;
+    const def = this.npcs.has(id) ? this.npcs.get(id) : undefined;
+    if (!def) throw new Error(`Unknown actor: ${id}`);
+    const actor = new Player(id, def.name, def.location ?? this.defaultLocation, 0);
+    this.attachHooks(actor);
+    this.npcActors.set(id, actor);
+    return actor;
+  }
+
+  /** True for account-holding players, as opposed to NPC actors. */
+  isPlayer(id: string): boolean {
+    return this.playersMap.has(id);
+  }
+
+  /** Look up an actor without creating NPC state. Undefined when unknown. */
+  actorIfPresent(id: string): Player | undefined {
+    return this.playersMap.get(id) ?? this.npcActors.get(id);
+  }
 
   private attachHooks(player: Player): void {
     player.hooks = {
@@ -238,13 +283,14 @@ export class Sim {
   }
 
   /**
-   * Run an action for a player: check requirements, execute effects, and record
-   * a cause. Refused actions move nothing and throw `ActionRefused` (HTTP 400).
+   * Run an action for an actor (a player, or an NPC acting on its own):
+   * check requirements, execute effects, and record a cause. Refused actions
+   * move nothing and throw `ActionRefused` (HTTP 400).
    */
   execute<R = unknown>(actorId: string, actionId: string, inputs: Record<string, unknown> = {}): R {
     const def = this.actions.get(actionId);
     if (!def) throw new Error(`Unknown action: ${actionId}`);
-    const actor = this.players.get(actorId);
+    const actor = this.actorOf(actorId);
     // Resolve the target first. Unknown or wrong-kind ids are request errors (404).
     let target: Entity | undefined;
     if (def.targetKind) {
@@ -321,7 +367,7 @@ export class Sim {
     net: number;
     lines: { category: string; credits: number; debits: number; net: number }[];
   } {
-    const player = this.players.get(playerId);
+    const player = this.actorOf(playerId);
     const fromDay = opts.fromDay ?? 1;
     const toDay = opts.toDay ?? null;
     const txs = player.wallet.history.filter(
@@ -355,8 +401,57 @@ export class Sim {
     };
   }
 
-  private tickDay(_day: number): void {
+  private tickDay(day: number): void {
     this.events.tick(this.eventCtx());
+    this.settleSchedules(day);
+  }
+
+  /**
+   * Settle every schedule due on `day` through the `settle-obligation`
+   * action, so payments (and misses) get requirements, ledger entries, and
+   * causal records. Never throws: a broken schedule is logged as missed and
+   * moved past, so one bad definition cannot stall the world.
+   */
+  private settleSchedules(day: number): void {
+    for (const s of this.schedules.dueOn(day)) {
+      try {
+        this.execute(s.payer, "settle-obligation", { scheduleId: s.id });
+        this.advanceSchedule(s, day);
+      } catch (err) {
+        if (err instanceof ActionRefused) {
+          this.emit(
+            "OBLIGATION_MISSED",
+            { scheduleId: s.id, payer: s.payer, amount: s.amount, reason: err.reasons[0] ?? "refused" },
+            s.payer,
+          );
+          if (s.onMiss === "retry") continue;
+          if (s.onMiss === "default") {
+            s.active = false;
+            this.emit(
+              "OBLIGATION_DEFAULTED",
+              { scheduleId: s.id, payer: s.payer, amount: s.amount },
+              s.payer,
+            );
+            continue;
+          }
+          this.advanceSchedule(s, day); // skip
+        } else {
+          const message = err instanceof Error ? err.message : String(err);
+          this.emit(
+            "OBLIGATION_MISSED",
+            { scheduleId: s.id, payer: s.payer, amount: s.amount, error: message },
+            s.payer,
+          );
+          this.advanceSchedule(s, day);
+        }
+      }
+    }
+  }
+
+  private advanceSchedule(s: Schedule, day: number): void {
+    do {
+      s.nextDue += s.everyDays;
+    } while (s.nextDue <= day);
   }
 
   /** Advance N days, ticking events each day. */
@@ -365,6 +460,7 @@ export class Sim {
     for (let i = 0; i < days; i++) {
       this.clock.advanceDays(1);
       fired.push(...this.events.tick(this.eventCtx()));
+      this.settleSchedules(this.clock.day);
     }
     this.maybeRecordDays();
     return fired;
@@ -712,6 +808,7 @@ export class Sim {
       rngState: this.rng.getState(),
       clock: this.clock.toJSON(),
       players: [...this.playersMap.values()].map((p) => p.toJSON()),
+      npcActors: [...this.npcActors.values()].map((p) => p.toJSON()),
       world: this.world.toJSON(),
       jobs: this.jobs.toJSON(),
       events: this.events.list(),
@@ -729,6 +826,7 @@ export class Sim {
       lastRecordedDay: this.lastRecordedDay,
       causes: [...this.causes],
       entities: this.entities.toJSON(),
+      schedules: this.schedules.toJSON(),
       causeSeq: this.causeSeq,
     };
   }
@@ -744,7 +842,13 @@ export class Sim {
     sim.jobs = JobManager.fromJSON(snapshot.jobs);
     sim.npcs = NpcManager.fromJSON(snapshot.npcs ?? []);
     sim.items = ItemCatalog.fromJSON(snapshot.items ?? []);
-    sim.businesses = BusinessManager.fromJSON(snapshot.businesses ?? []);
+    // Entities before the business manager: it is a view over this registry.
+    sim.entities = EntityRegistry.fromJSON(snapshot.entities);
+    sim.schedules = ScheduleManager.fromJSON(snapshot.schedules);
+    sim.businesses = new BusinessManager(sim.entities);
+    // Legacy snapshots carry a businesses array without entities: import it.
+    // New snapshots already contain the same businesses as entities, so this is a no-op for them.
+    sim.businesses.importLegacy(snapshot.businesses ?? []);
     sim.missions = MissionManager.fromJSON(snapshot.missions ?? []);
     sim.trades = TradeLedger.fromJSON(snapshot.trades ?? []);
     sim.priceModifiers = { ...snapshot.priceModifiers };
@@ -754,7 +858,6 @@ export class Sim {
     sim.worldVersion = snapshot.worldVersion ?? "v1";
     sim.causes = [...(snapshot.causes ?? [])];
     sim.causeSeq = snapshot.causeSeq ?? sim.causes.length;
-    sim.entities = EntityRegistry.fromJSON(snapshot.entities);
     sim.history = [...(snapshot.history ?? [])];
     sim.lastRecordedDay = snapshot.lastRecordedDay ?? snapshot.clock.day;
     sim.playersMap.clear();
@@ -762,6 +865,12 @@ export class Sim {
       const p = Player.fromJSON(pj);
       sim.attachHooks(p);
       sim.playersMap.set(p.id, p);
+    }
+    sim.npcActors.clear();
+    for (const aj of snapshot.npcActors ?? []) {
+      const actor = Player.fromJSON(aj);
+      sim.attachHooks(actor);
+      sim.npcActors.set(actor.id, actor);
     }
     for (const def of snapshot.events) sim.events.define(def);
     sim.events.restoreCounts(snapshot.eventRuntime);
@@ -789,6 +898,7 @@ export function createSimulation(opts: {
   businesses?: BusinessDef[];
   missions?: MissionDef[];
   entities?: EntityDef[];
+  schedules?: ScheduleDef[];
   store?: Store;
 }): Sim {
   const sim = new Sim(
@@ -809,5 +919,6 @@ export function createSimulation(opts: {
   for (const biz of opts.businesses ?? []) sim.businesses.define(biz);
   for (const mission of opts.missions ?? []) sim.missions.define(mission);
   for (const entity of opts.entities ?? []) sim.entities.define(entity);
+  for (const schedule of opts.schedules ?? []) sim.schedules.define(schedule);
   return sim;
 }

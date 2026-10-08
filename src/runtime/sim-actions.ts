@@ -1,6 +1,7 @@
 import type { ActionDef, RequirementContext } from "./action.js";
 import { invalidInput, requirements } from "./action.js";
 import type { TradeOffer, TradeTerms } from "../trades.js";
+import { defineEmployee, employeesOf } from "../employment.js";
 
 /**
  * Sim-level actions: NPC talk, player-to-player money and trades, businesses,
@@ -413,6 +414,107 @@ export const missionClaimAction: ActionDef<number> = {
   },
 };
 
+export const hireAction: ActionDef<{ id: string; wage: number }> = {
+  id: "hire",
+  description: "Hire an employee for a business you own. The company pays them via payroll.",
+  targetKind: "business",
+  validate({ inputs }) {
+    str(inputs, "id");
+    const wage = inputs.wage;
+    if (typeof wage !== "number" || !(wage > 0)) {
+      throw invalidInput(`Wage must be positive, got ${String(wage)}`);
+    }
+  },
+  requires: [
+    {
+      id: "owner",
+      check: (ctx) => {
+        const biz = ctx.sim.businesses.get((ctx.target as { id: string }).id);
+        return biz.ownerId === ctx.actor.id ? null : `You don't own ${biz.name}`;
+      },
+    },
+    {
+      id: "id-free",
+      check: (ctx) =>
+        ctx.sim.entities.has(str(ctx.inputs, "id")) ? `Entity already exists: ${str(ctx.inputs, "id")}` : null,
+    },
+  ],
+  execute({ sim, actor, inputs, target }) {
+    const businessId = (target as { id: string }).id;
+    const employee = defineEmployee(sim.entities, {
+      id: str(inputs, "id"),
+      name: (inputs.name as string | undefined) ?? str(inputs, "id"),
+      role: inputs.role as string | undefined,
+      wage: inputs.wage as number,
+      employerId: businessId,
+    });
+    actor.touch();
+    sim.emit("HIRED", { businessId, employeeId: employee.id, wage: employee.wage }, actor.id);
+    return { id: employee.id, wage: employee.wage };
+  },
+};
+
+export const payrollAction: ActionDef<{ total: number; payments: { employeeId: string; amount: number }[] }> = {
+  id: "payroll",
+  description: "Pay every employee of a business you own their wage, from your wallet.",
+  targetKind: "business",
+  requires: [
+    {
+      id: "owner",
+      check: (ctx) => {
+        const biz = ctx.sim.businesses.get((ctx.target as { id: string }).id);
+        return biz.ownerId === ctx.actor.id ? null : `You don't own ${biz.name}`;
+      },
+    },
+    {
+      id: "has-employees",
+      check: (ctx) =>
+        employeesOf(ctx.sim.entities, (ctx.target as { id: string }).id).length > 0
+          ? null
+          : "No employees to pay",
+    },
+    requirements.hasCash((ctx) =>
+      employeesOf(ctx.sim.entities, (ctx.target as { id: string }).id).reduce((s, e) => s + e.wage, 0),
+    ),
+  ],
+  execute({ sim, actor, target }) {
+    const businessId = (target as { id: string }).id;
+    const payments: { employeeId: string; amount: number }[] = [];
+    actor.touch();
+    for (const emp of employeesOf(sim.entities, businessId)) {
+      actor.wallet.debit(emp.wage, actor.stamp(`payroll:${businessId}:to:${emp.id}`));
+      emp.balance += emp.wage;
+      payments.push({ employeeId: emp.id, amount: emp.wage });
+    }
+    const total = payments.reduce((s, p) => s + p.amount, 0);
+    sim.emit("PAYROLL_PAID", { businessId, total, payments }, actor.id);
+    return { total, payments };
+  },
+};
+
+export const settleObligationAction: ActionDef<{ amount: number; payee?: string; sunk: boolean }> = {
+  id: "settle-obligation",
+  description: "Settle one scheduled payment: debit the payer, credit the payee, or destroy the money.",
+  validate({ sim, inputs }) {
+    const s = sim.schedules.get(str(inputs, "scheduleId"));
+    if (!s.active) throw invalidInput(`Schedule ${s.id} is not active`);
+  },
+  requires: [requirements.hasCash((ctx) => ctx.sim.schedules.get(str(ctx.inputs, "scheduleId")).amount)],
+  execute({ sim, actor, inputs }) {
+    const s = sim.schedules.get(str(inputs, "scheduleId"));
+    actor.wallet.debit(s.amount, actor.stamp(s.reason));
+    const payee = s.payee ? sim.actorIfPresent(s.payee) : undefined;
+    const sunk = !payee;
+    if (payee) payee.wallet.credit(s.amount, payee.stamp(`${s.reason}:from:${actor.id}`));
+    sim.emit(
+      "OBLIGATION_PAID",
+      { scheduleId: s.id, amount: s.amount, payer: actor.id, payee: s.payee, sunk },
+      actor.id,
+    );
+    return { amount: s.amount, payee: s.payee, sunk };
+  },
+};
+
 export const SIM_ACTIONS: ActionDef<unknown>[] = [
   talkAction,
   transferAction,
@@ -424,4 +526,7 @@ export const SIM_ACTIONS: ActionDef<unknown>[] = [
   businessCollectAction,
   missionAcceptAction,
   missionClaimAction,
+  hireAction,
+  payrollAction,
+  settleObligationAction,
 ] as ActionDef<unknown>[];

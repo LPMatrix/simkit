@@ -44,13 +44,8 @@ export async function lagosLife(): Promise<{ sim: Sim; player: Player }> {
   });
   const player = await sim.players.create({ name: "Mubaraq", location: "yaba" });
   player.acceptJob("danfo-driver"); // [OK]
-  // Rent is a recurring obligation. Built here as an event bound to one player id.
-  sim.events.define({
-    id: "rent-due",
-    probability: 1,
-    cooldownDays: 30,
-    effect: (ctx) => ctx.getPlayer(player.id).wallet.debit(160000, { reason: "rent" }),
-  }); // [WORKAROUND] recurring rent via a probability-1 event, bound by closure
+  // Rent is a recurring obligation, settled through the pipeline.
+  sim.schedules.define({ id: "rent", payer: player.id, amount: 160000, everyDays: 30, reason: "rent" }); // [OK] schedule, not a probability-1 event
   // Transport and food are immediate actions.
   return { sim, player };
 }
@@ -73,14 +68,12 @@ export async function startup(): Promise<{ sim: Sim; founder: Player }> {
   // Revenue is a fixed daily income. Nothing links it to market demand.
   sim.businesses.get("acme").dailyIncome = 6000; // [WORKAROUND] revenue set by direct mutation; bypasses the ledger
   // [MISSING] market demand or competition does not change business income.
-  // [MISSING] employees: no employee entity or payroll that the company pays out.
+  // Staff are employee entities hired through the hire action and paid through payroll.
+  sim.execute(founder.id, "hire", { target: "acme", id: "eng", name: "Engineer", wage: 8000 }); // [OK]
+  sim.execute(founder.id, "hire", { target: "acme", id: "intern", name: "Intern", wage: 3000 }); // [OK]
 
-  // Burn: server bills, every day.
-  sim.events.define({
-    id: "burn",
-    probability: 1,
-    effect: (ctx) => ctx.getPlayer(founder.id).wallet.debit(9000, { reason: "burn:server" }),
-  }); // [WORKAROUND] daily recurring cost via probability-1 event
+  // Burn: server bills, every day, through the pipeline (misses are recorded, not silent).
+  sim.schedules.define({ id: "burn", payer: founder.id, amount: 9000, everyDays: 1, reason: "burn:server" }); // [OK] schedule with a visible miss policy
   // Angel funding: random inflow.
   sim.events.define({
     id: "angel",
@@ -107,7 +100,9 @@ export async function university(): Promise<{ sim: Sim; student: Player }> {
     gameId: "exp-uni",
     seed: 9,
     startingCash: 50000, // [OK]
-    jobs: [{ id: "cs101", name: "CS101", salary: 0, energyCost: 0 }], // [WORKAROUND] a course is modelled as a job: there is no generic entity type
+    entities: [
+      { id: "cs101", kind: "course", name: "CS101", attributes: { capacity: 40, enrolled: 0 } },
+    ], // [OK] a course is a generic entity, not a job
     locations: [
       { id: "campus", travelCost: 0, travelTimeMinutes: 10 }, // [OK]
       { id: "hostel", travelCost: 0, travelTimeMinutes: 5 }, // [OK]
@@ -116,40 +111,31 @@ export async function university(): Promise<{ sim: Sim; student: Player }> {
     items: [{ id: "textbook", price: 8000 }], // [OK] purchases
   });
   const student = await sim.players.create({ name: "Student", location: "hostel" });
-  student.acceptJob("cs101"); // [WORKAROUND] enrolment is job acceptance; no enrolment semantics
+  sim.execute(student.id, "enrol", { target: "cs101" }); // [OK] enrolment is an action on a course entity
 
-  // Study is a custom action: requirement, time, energy, and a progression stat.
+  // Study is a custom action on a course: requirement, time, energy, and a progression stat.
   sim.defineAction({
     id: "study",
     description: "Study the enrolled course.",
+    targetKind: "course",
     requires: [
       {
         id: "enrolled",
-        check: ({ actor }) => (actor.jobId === "cs101" ? null : "Not enrolled in CS101"),
+        check: ({ actor, target }) =>
+          actor.enrolments[target!.id] ? null : `Not enrolled in ${target!.name}`,
       },
       requirements.hasEnergy(15, "Too tired to study."),
     ],
-    execute({ actor }) {
+    execute({ actor, target }) {
       actor.hooks.advanceMinutes(240);
       actor.adjustEnergy(-15);
-      actor.progression.addStat("grade:cs101", 2);
+      actor.progression.addStat(`grade:${target!.id}`, 2);
     },
-  }); // [OK] custom action through the pipeline, including refusals and causal records
+  }); // [OK] custom action on a generic entity, through the pipeline
 
-  // Tuition every 60 days.
-  sim.events.define({
-    id: "tuition",
-    probability: 1,
-    cooldownDays: 60,
-    effect: (ctx) => ctx.getPlayer(student.id).wallet.debit(40000, { reason: "tuition" }),
-  }); // [WORKAROUND] recurring obligation via cooldown event
-  // Hostel rent, monthly.
-  sim.events.define({
-    id: "hostel-rent",
-    probability: 1,
-    cooldownDays: 30,
-    effect: (ctx) => ctx.getPlayer(student.id).wallet.debit(15000, { reason: "rent:hostel" }),
-  }); // [WORKAROUND] same recurring-obligation workaround
+  // Tuition every 60 days, hostel rent monthly: both recurring obligations.
+  sim.schedules.define({ id: "tuition", payer: student.id, amount: 40000, everyDays: 60, reason: "tuition" }); // [OK] schedule
+  sim.schedules.define({ id: "hostel-rent", payer: student.id, amount: 15000, everyDays: 30, reason: "rent:hostel" }); // [OK] schedule
   // Exam every 30 days: pass if the grade is high enough. Reads a progression stat.
   sim.events.define({
     id: "exam",
@@ -161,7 +147,7 @@ export async function university(): Promise<{ sim: Sim; student: Player }> {
     },
   }); // [WORKAROUND] event effects get a restricted player view with no progression access; a closure is used
   // [MISSING] grades decay, courses have credits or prerequisites, and there is no transcript concept.
-  // [MISSING] there is no concept of an allowance paid by an external source on a schedule.
+  // [MISSING] stipends need payer-less (minting) schedules; obligations always debit someone.
   return { sim, student };
 }
 // === END: UNIVERSITY ===
@@ -190,6 +176,11 @@ export async function run(): Promise<void> {
       } catch {
         // nothing to collect yet
       }
+      try {
+        S.sim.execute(S.founder.id, "payroll", { target: "acme" });
+      } catch {
+        // unaffordable payroll is refused and recorded
+      }
     }
   }
 
@@ -197,7 +188,7 @@ export async function run(): Promise<void> {
   for (let d = 0; d < 60; d++) {
     if (U.student.energy < 30) U.student.sleep(8);
     try {
-      U.sim.execute(U.student.id, "study");
+      U.sim.execute(U.student.id, "study", { target: "cs101" });
     } catch {
       // refusal recorded
     }
@@ -212,7 +203,8 @@ export async function run(): Promise<void> {
     L.sim.causalRecords().filter((c) => c.outcome === "refused").length);
   console.log("Startup     balance:", S.founder.wallet.balance, "income events:",
     S.sim.eventLog.filter((e) => e.type === "BUSINESS_INCOME").length,
-    "burn debits recorded:", S.founder.wallet.history.filter((t) => t.reason === "burn:server").length);
+    "burn debits recorded:", S.founder.wallet.history.filter((t) => t.reason === "burn:server").length,
+    "payroll runs:", S.sim.eventLog.filter((e) => e.type === "PAYROLL_PAID").length);
   console.log("University  grade:", U.student.progression.getStat("grade:cs101"),
     "passed:", U.student.progression.getStat("passed:cs101"),
     "balance:", U.student.wallet.balance);
