@@ -1,5 +1,5 @@
 # Lagos Life — reference world for population runs.
-# npx simkit simulate --config ./examples/lagos-life.yaml --population 1000 --days 365 --seeds 10
+# npx @sirmatrix/simkit simulate --config ./examples/lagos-life.yaml --population 1000 --days 365 --seeds 10
 gameId: lagos-life
 currency: NGN
 seed: 42

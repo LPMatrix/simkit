@@ -82,11 +82,11 @@ Events + Ledger (linked to the action)
 ## Quickstart
 
 ```bash
-npm install simkit
+npm install @sirmatrix/simkit
 ```
 
 ```ts
-import { createSimulation, requirements } from "simkit";
+import { createSimulation, requirements } from "@sirmatrix/simkit";
 
 const world = createSimulation({
   gameId: "harbour-town",
@@ -185,7 +185,7 @@ See [docs/API.md](docs/API.md) for the endpoint reference.
 **Hosted.** Run the server and talk to the same world over HTTP. Good for multiplayer games, live dashboards, and anything with more than one client.
 
 ```ts
-import { SimClient } from "simkit";
+import { SimClient } from "@sirmatrix/simkit";
 
 const client = new SimClient({ baseUrl: "http://localhost:8787", apiKey: "simkit-dev", gameId: "harbour-town" });
 const alice = await client.createPlayer({ name: "Alice" });
@@ -244,7 +244,7 @@ docs/         API reference
 `simulate()` runs headless worlds for balancing: N agents follow a daily routine for D days across several seeds, and the report aggregates wealth, employment, bankruptcy, obligations, and invariant violations.
 
 ```ts
-import { simulate } from "simkit";
+import { simulate } from "@sirmatrix/simkit";
 
 const report = await simulate({
   world: cfg, // a GameConfigFile, or (seed) => Sim factory
@@ -256,7 +256,7 @@ const report = await simulate({
 ```
 
 ```bash
-npx simkit simulate --config ./examples/lagos-life.yaml --population 1000 --days 365 --seeds 10
+npx @sirmatrix/simkit simulate --config ./examples/lagos-life.yaml --population 1000 --days 365 --seeds 10
 ```
 
 Each loop iteration is exactly one clock day: intraday time is suspended during the run (energy, money, and state effects still apply) so sequential agents don't advance the shared clock faster than the loop. Days advance explicitly, and every settlement, event, and hook fires exactly once per day. The default routine works, sleeps, and eats; pass `behavior` to test your own policies. Runs that violate invariants are flagged in the report instead of failing silently.
