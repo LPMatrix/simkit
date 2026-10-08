@@ -194,8 +194,21 @@ async function refresh() {
 }
 
 async function refreshInspector() {
-  const g = state.game, id = state.inspectId;
+  const g = state.game;
+  let id = state.inspectId;
   if (!id) return;
+  // Accept a name as well as an id: resolve case-insensitively against players.
+  if (!id.startsWith("player_")) {
+    try {
+      const list = await api(`/v1/games/${g}/players`);
+      const match = list.players.find((p) => p.name.toLowerCase() === id.toLowerCase());
+      if (match) {
+        id = match.id;
+        state.inspectId = id;
+        $("inspectId").value = id;
+      }
+    } catch { /* fall through to id lookup, which reports the error */ }
+  }
   const [actor, explain, replay, graph] = await Promise.all([
     api(`/v1/games/${g}/actors/${encodeURIComponent(id)}`),
     api(`/v1/games/${g}/players/${encodeURIComponent(id)}/explain`),
@@ -278,7 +291,7 @@ document.addEventListener("click", async (e) => {
     if (b.dataset.act === "inspect") {
       state.inspectId = $("inspectId").value.trim() || null;
       if (!state.inspectId) { $("inspectDetail").textContent = "No actor selected."; $("inspectExplain").textContent = ""; $("inspectReplay").textContent = ""; return; }
-      await refreshInspector();
+      await refreshInspector().catch((err) => alert(err.message));
       return;
     }
     if (b.dataset.act === "advance") await api(`/v1/games/${g}/advance`, { method: "POST", body: JSON.stringify({ days: Number(b.dataset.days) }) });

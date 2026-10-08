@@ -24,6 +24,8 @@ Your Rules & Systems
 Your Backend / Database
 ```
 
+
+
 ## Why SimKit?
 
 Systemic games are difficult to build because the complexity isn't just in rendering the world. It's in making the world **behave consistently**.
@@ -75,6 +77,8 @@ State Transition
 Events + Ledger (linked to the action)
 ```
 
+
+
 ## Quickstart
 
 ```bash
@@ -107,6 +111,8 @@ world.advanceDays(7);      // daily events tick
 console.log(world.explain(alice.id));                 // where the money went, by category
 console.log(world.replay({ actorId: alice.id }));     // every action, with its ledger entries
 ```
+
+
 
 ## Concepts
 
@@ -145,19 +151,21 @@ Actions that were shaped by earlier triggers carry links: travel under raised tr
 
 SimKit ships these as building blocks. They are generic, not tied to one setting:
 
-| System | What it provides |
-|---|---|
-| Economy | Wallets with auditable transactions, market modifiers, issuance and destruction stats |
-| Jobs | Hiring, work shifts, pay on a schedule, skill requirements, energy costs |
-| Locations | Location graph with travel cost and time, visit tracking |
-| Needs | Energy and health, restored by sleep, food, and items |
-| Relationships | NPCs with locations, dialogue drawn from the seeded RNG, relationship levels |
-| Businesses | Ownership, daily income, collection, hiring employees, payroll |
-| Assets | Items with prices, effects, buying, selling, and trading |
-| Progression | Skills, XP and levels, achievements |
-| Missions | Goals (earn, wealth, level, relationship, ownership) with rewards |
-| Multiplayer | Direct transfers and trade offers that settle atomically |
-| Worlds | Declarative config (YAML or JSON), installable packs, versioned rules with migrations |
+
+| System        | What it provides                                                                      |
+| ------------- | ------------------------------------------------------------------------------------- |
+| Economy       | Wallets with auditable transactions, market modifiers, issuance and destruction stats |
+| Jobs          | Hiring, work shifts, pay on a schedule, skill requirements, energy costs              |
+| Locations     | Location graph with travel cost and time, visit tracking                              |
+| Needs         | Energy and health, restored by sleep, food, and items                                 |
+| Relationships | NPCs with locations, dialogue drawn from the seeded RNG, relationship levels          |
+| Businesses    | Ownership, daily income, collection, hiring employees, payroll                        |
+| Assets        | Items with prices, effects, buying, selling, and trading                              |
+| Progression   | Skills, XP and levels, achievements                                                   |
+| Missions      | Goals (earn, wealth, level, relationship, ownership) with rewards                     |
+| Multiplayer   | Direct transfers and trade offers that settle atomically                              |
+| Worlds        | Declarative config (YAML or JSON), installable packs, versioned rules with migrations |
+
 
 Lagos Life, Ilorin Life, and the other packs are examples of how these systems are configured. They are not the framework's scope. See `examples/`.
 
@@ -186,6 +194,8 @@ await client.work(alice.id);
 await client.advance(7);
 ```
 
+
+
 ## Not what SimKit is
 
 SimKit is not a generic game backend. Use your existing infrastructure for authentication, databases, networking, multiplayer, hosting, and payments. SimKit covers the layer those systems don't: **the semantics and execution of the simulated world.**
@@ -198,20 +208,15 @@ SimKit is pre-1.0 and evolving in public. The runtime is being tested against di
 - generic entities (courses, employees, businesses) can be targeted by actions, and NPCs can act through the same pipeline as players — but only players hold accounts
 - events can only reach a player by id, and their effect context is restricted
 
+
+
 ## Roadmap
 
-- [x] Actions and rules pipeline with refusals and causal records
-- [x] Deterministic, seeded simulation
-- [x] Replay and explanations (per actor, per day window)
-- [x] First-class entity and actor model
-- [x] Recurring schedules (obligations, payroll)
-- [x] Composable simulation systems
-- [x] Causal chains across actions
-- [x] Population simulation
-- [x] Simulation testing
 - [x] Simulation Control Room (pause, inspect, and step the world)
 - [ ] More domain packs
 - [ ] Engine and backend integrations
+
+
 
 ## Development
 
