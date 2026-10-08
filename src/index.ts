@@ -18,6 +18,11 @@ export { MissionManager, type Mission, type MissionDef, type MissionGoal, type M
 export { TradeLedger, type TradeOffer, type TradeStatus, type TradeTerms } from "./trades.js";
 export { buildLeaderboard, LEADERBOARD_METRICS, type LeaderboardEntry, type LeaderboardMetric } from "./leaderboards.js";
 export { parseGameConfig, createSimulationFromConfig, loadGameConfigFile, type GameConfigFile } from "./config.js";
+export { ActionRefused, requirements, type ActionDef, type ActionContext, type Requirement, type RequirementContext, type CauseRecord } from "./runtime/action.js";
+export type { CauseTrace } from "./sim.js";
+export { workAction, CORE_ACTIONS } from "./runtime/core-actions.js";
+export { enrolAction, ENTITY_ACTIONS } from "./runtime/entity-actions.js";
+export { EntityRegistry, type Entity, type EntityDef, type AttributeValue } from "./entities.js";
 export { PACKS, listPacks, installPack, type Pack } from "./packs/index.js";
 export type {
   SimConfig,

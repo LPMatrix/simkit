@@ -1,3 +1,5 @@
+import { invalidInput } from "./runtime/action.js";
+
 export type TradeStatus = "pending" | "accepted" | "declined" | "cancelled";
 
 export interface TradeTerms {
@@ -22,7 +24,7 @@ export interface TradeOffer {
 function normItems(items?: Record<string, number>): Record<string, number> {
   const out: Record<string, number> = {};
   for (const [id, qty] of Object.entries(items ?? {})) {
-    if (!Number.isInteger(qty) || qty <= 0) throw new Error(`Invalid quantity for ${id}: ${qty}`);
+    if (!Number.isInteger(qty) || qty <= 0) throw invalidInput(`Invalid quantity for ${id}: ${qty}`);
     out[id] = qty;
   }
   return out;
@@ -30,7 +32,7 @@ function normItems(items?: Record<string, number>): Record<string, number> {
 
 function normCash(n?: number): number {
   if (n == null) return 0;
-  if (!Number.isFinite(n) || n < 0) throw new Error(`Invalid cash amount: ${n}`);
+  if (!Number.isFinite(n) || n < 0) throw invalidInput(`Invalid cash amount: ${n}`);
   return Math.floor(n);
 }
 
@@ -44,7 +46,7 @@ export class TradeLedger {
   private seq = 0;
 
   propose(from: string, to: string, terms: TradeTerms, day: number): TradeOffer {
-    if (from === to) throw new Error("Cannot trade with yourself");
+    if (from === to) throw invalidInput("Cannot trade with yourself");
     const offer: TradeOffer = {
       id: `trade_${++this.seq}`,
       from,
@@ -58,7 +60,7 @@ export class TradeLedger {
     };
     if (offer.offerCash === 0 && offer.askCash === 0 &&
         Object.keys(offer.offerItems).length === 0 && Object.keys(offer.askItems).length === 0) {
-      throw new Error("Trade must offer or ask something");
+      throw invalidInput("Trade must offer or ask something");
     }
     this.offers.set(offer.id, offer);
     return { ...offer };

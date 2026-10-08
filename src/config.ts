@@ -9,6 +9,7 @@ import type { JobDef, LocationDef } from "./types.js";
 import type { MissionDef } from "./missions.js";
 import type { NpcDef } from "./npcs.js";
 import type { WorldVersionDef } from "./worlds.js";
+import type { EntityDef } from "./entities.js";
 
 /**
  * Declarative game configuration (§6 of the plan — configuration over code).
@@ -30,6 +31,7 @@ export interface GameConfigFile {
   items?: ItemDef[];
   businesses?: BusinessDef[];
   missions?: MissionDef[];
+  entities?: EntityDef[];
   worldVersions?: WorldVersionDef[];
 }
 
@@ -74,6 +76,7 @@ export function createSimulationFromConfig(cfg: GameConfigFile): {
     items: cfg.items,
     businesses: cfg.businesses,
     missions: cfg.missions,
+    entities: cfg.entities,
   });
   for (const packId of cfg.packs ?? []) installPack(sim, packId);
   return { sim, worldVersions: cfg.worldVersions ?? [] };

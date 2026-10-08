@@ -1,8 +1,79 @@
-# simkit
+# SimKit
 
-Simulation backend for life, economy, and city sim games. Define a world, get player accounts, game time, money, jobs, NPCs, events, progression, persistence, leaderboards, and analytics — without building any of that infrastructure yourself.
+### Build the rules. SimKit runs the world.
 
-> Build Nigerian life simulation games in days, not months.
+SimKit is a TypeScript simulation runtime and domain SDK for developers building **systemic worlds**.
+
+Define your world's entities, actions, rules, time, and systems. SimKit handles the machinery required to execute, persist, inspect, and replay the resulting simulation.
+
+```text
+Your Game
+    ↓
+Your Rules & Systems
+    ↓
+┌──────────────────────────────┐
+│           SimKit             │
+│                              │
+│  Actions     Rules           │
+│  State       Time            │
+│  Events      RNG             │
+│  Persistence Replay          │
+│  Explanations                │
+└──────────────────────────────┘
+    ↓
+Your Backend / Database
+```
+
+## Why SimKit?
+
+Systemic games are difficult to build because the complexity isn't just in rendering the world. It's in making the world **behave consistently**.
+
+A character gets a job. The job produces income. Income affects what they can afford. Transport costs eat into that income. Prices change. Events propagate. Relationships create obligations. Businesses employ people.
+
+These systems interact continuously, which creates a large state-transition problem underneath the game. SimKit provides the runtime for it.
+
+## Example
+
+Instead of hand-writing state changes everywhere:
+
+```ts
+player.money -= 1500
+player.energy -= 20
+player.location = "Lekki"
+player.experience += 5
+```
+
+You define an action once, with the requirements it needs and the effects it has:
+
+```ts
+world.defineAction({
+  id: "buy-tools",
+  requires: [
+    requirements.hasCash(200),
+    { id: "rested", check: ({ actor }) => (actor.energy >= 20 ? null : "Too tired to shop") },
+  ],
+  execute({ actor }) {
+    actor.wallet.debit(200, actor.stamp("tools"));
+    actor.progression.addStat("craft", 1);
+  },
+});
+
+world.execute(alice.id, "buy-tools"); // throws ActionRefused, with every reason, if a requirement fails
+```
+
+SimKit checks the requirements first. If they fail, nothing moves and the refusal is recorded. If they pass, the effects run, and every ledger entry and event they produce is linked to that action.
+
+```text
+Action
+  ↓
+Requirements
+  ↓
+Effects
+  ↓
+State Transition
+  ↓
+Events + Ledger (linked to the action)
+```
 
 ## Quickstart
 
@@ -11,195 +82,154 @@ npm install simkit
 ```
 
 ```ts
-import { createSimulation } from "simkit";
+import { createSimulation, requirements } from "simkit";
 
-const sim = createSimulation({
-  gameId: "lagos-life",
-  currency: "NGN",
+const world = createSimulation({
+  gameId: "harbour-town",
   seed: 42,
-  locations: ["yaba", "ikeja", "lekki", "surulere"],
-  jobs: [{ id: "danfo-driver", salary: 150000, workingHours: 8 }],
-  events: [{ id: "fuel-crisis", probability: 0.03 }],
+  currency: "USD",
+  startingCash: 1000,
+  locations: [
+    { id: "docks", travelCost: 5, travelTimeMinutes: 20 },
+    { id: "market", travelCost: 0, travelTimeMinutes: 10 },
+  ],
+  jobs: [{ id: "porter", salary: 3000, workingHours: 8, energyCost: 25 }],
+  events: [{ id: "storm", probability: 0.05 }],
 });
 
-const player = await sim.players.create({ name: "Mubaraq", location: "yaba" });
-player.acceptJob("danfo-driver");
-player.work();      // +8h game time, daily pay, −energy, +XP
-player.eat();       // −₦, +energy
-player.travel("lekki");
-player.sleep();     // +8h, restore energy
+const alice = await world.players.create({ name: "Alice", location: "docks" });
+alice.acceptJob("porter");
+alice.work();              // time passes, energy drops, pay is credited
+alice.travel("market");    // travel costs money and time
 
-sim.advanceDays(7);            // tick world events
-sim.console.giveAll(10_000);   // dev console: fund everyone
-sim.console.trigger("fuel-crisis");
-console.log(sim.stats());
+world.advanceDays(7);      // daily events tick
+
+console.log(world.explain(alice.id));                 // where the money went, by category
+console.log(world.replay({ actorId: alice.id }));     // every action, with its ledger entries
 ```
 
-## Two ways to run it
+## Concepts
 
-**Embedded** — the SDK runs in-process. Best for single-player games, prototypes, and tests. Zero infrastructure.
+**Actions.** Every state change is an action with requirements and effects. Built-in actions cover movement, work, purchases, trades, and missions. You can define your own with `defineAction`. Refused actions move nothing and are recorded with every reason.
 
-**Hosted** — run `npm run server` and talk to the same simulation over HTTP. Best for multiplayer games, live dashboards, and anything with more than one client.
+**Time.** The world has its own clock. Actions consume game time, and `advanceDays` moves the world forward. Nothing depends on wall-clock time.
+
+**State.** Players, businesses, NPCs, items, and jobs are plain data behind a small API. Money lives in an auditable ledger, where each entry records its reason, time, and the action that caused it.
+
+**Events.** Declarative world events with probability, cooldown, conditions, and effects. Effects can change prices (`priceModifiers`) that actions apply at execution time. If an effect fails, the tick continues and an `EVENT_EFFECT_FAILED` entry is logged.
+
+**Randomness.** All randomness goes through a seeded RNG (`world.rng`). Given the same seed and the same sequence of actions, you get the same results. This is covered by tests; there are no golden fingerprints yet.
+
+**Persistence.** `world.snapshot()` and `Sim.restore()` round-trip the whole world, including causal records. The server stores snapshots in SQLite or JSON files. Postgres is the planned scale-out path behind the `Store` interface.
+
+## Explanations and replay
+
+```ts
+world.explain(alice.id, { fromDay: 1, toDay: 7 });
+// { balance, net, lines: [{ category: "salary", credits, debits, net }, ...] }
+
+world.replay({ actorId: alice.id, fromDay: 1, toDay: 7 });
+// [{ actionId, outcome, transactions, events, ... }, ...]
+```
+
+Replay returns the recorded actions and what each one produced. It does not reconstruct arbitrary past state, and it doesn't yet model causal chains across actions, such as a fuel price rise leading to debt. Those are on the roadmap.
+
+## Domain systems
+
+SimKit ships these as building blocks. They are generic, not tied to one setting:
+
+| System | What it provides |
+|---|---|
+| Economy | Wallets with auditable transactions, market modifiers, issuance and destruction stats |
+| Jobs | Hiring, work shifts, pay on a schedule, skill requirements, energy costs |
+| Locations | Location graph with travel cost and time, visit tracking |
+| Needs | Energy and health, restored by sleep, food, and items |
+| Relationships | NPCs with locations, dialogue drawn from the seeded RNG, relationship levels |
+| Businesses | Ownership, daily income, collection |
+| Assets | Items with prices, effects, buying, selling, and trading |
+| Progression | Skills, XP and levels, achievements |
+| Missions | Goals (earn, wealth, level, relationship, ownership) with rewards |
+| Multiplayer | Direct transfers and trade offers that settle atomically |
+| Worlds | Declarative config (YAML or JSON), installable packs, versioned rules with migrations |
+
+Lagos Life, Ilorin Life, and the other packs are examples of how these systems are configured. They are not the framework's scope. See `examples/`.
+
+## Tools
+
+- **Server**: `npm run server` starts an HTTP API with API-key auth, realtime event streams, and a dashboard at `/dashboard`.
+- **Dashboard**: game state, economy charts, leaderboards, the event log, and world controls (advance time, fund players, trigger events, set prices).
+- **Client**: `SimClient` mirrors the local API over HTTP, so the same game code can run embedded or hosted.
+- **Simulation console**: `world.console` for dev-time control (give money, set prices, trigger events, advance time).
+
+See [docs/API.md](docs/API.md) for the endpoint reference.
+
+## Use it embedded or hosted
+
+**Embedded.** The SDK runs in your process. Good for single-player games, prototypes, and tests.
+
+**Hosted.** Run the server and talk to the same world over HTTP. Good for multiplayer games, live dashboards, and anything with more than one client.
 
 ```ts
 import { SimClient } from "simkit";
 
-const client = new SimClient({ baseUrl: "http://localhost:8787", apiKey: "simkit-dev", gameId: "lagos-life" });
-const player = await client.createPlayer({ name: "Mubaraq" });
-await client.acceptJob(player.id, "danfo-driver");
-await client.work(player.id);
+const client = new SimClient({ baseUrl: "http://localhost:8787", apiKey: "simkit-dev", gameId: "harbour-town" });
+const alice = await client.createPlayer({ name: "Alice" });
+await client.acceptJob(alice.id, "porter");
+await client.work(alice.id);
 await client.advance(7);
 ```
 
-## Systems
+## Not what SimKit is
 
-Everything below works identically embedded and hosted.
+SimKit is not a generic game backend. Use your existing infrastructure for authentication, databases, networking, multiplayer, hosting, and payments. SimKit covers the layer those systems don't: **the semantics and execution of the simulated world.**
 
-| System | What you get |
-|---|---|
-| Player | Cash, energy, health, reputation, location, inventory, stats |
-| Time | Independent game clock (starts Monday 08:00). Every action consumes game time, never wall-clock time |
-| Economy | Wallet where every credit/debit is an auditable transaction |
-| Jobs | `accept / work / quit`, monthly salaries paid daily, skill requirements, energy costs |
-| World | Location graph with travel cost and travel time |
-| Events | Declarative random events: `probability / cooldown / once / condition / effect` |
-| Progression | Skills, XP/levels, achievements |
-| NPCs | Location-bound characters with seeded dialogue; talking builds stranger → family relationships |
-| Items | Buyable, usable (energy/health effects), sellable inventory |
-| Businesses | Buy once, collect per-day income |
-| Missions | Earn / wealth / level / relationship / own-item goals with cash + XP rewards |
-| Multiplayer | Instant P2P transfers plus proposed trades of cash + items, validated at proposal and acceptance |
-| Leaderboards | Dense-ranked wealth, level, XP, and reputation boards, plus per-player rank |
-| Observability | Point-in-time stats, economy time-series, wealth distribution, retention, inflation, issuance, visits, activity |
+## Status
 
-```ts
-sim.talk(player.id, "mama-put");          // { line, score, level }
-player.buy("amala"); player.use("amala");
-sim.transfer(ada.id, bola.id, 5000);
-const offer = sim.offerTrade(ada.id, bola.id, { offerCash: 5000, askCash: 8000 });
-sim.acceptTrade(offer.id, bola.id);       // atomic — or nothing moves
-sim.buyBusiness(player.id, "mama-put-buka");
-sim.collectIncome(player.id, "mama-put-buka");
-sim.acceptMission(player.id, "first-100k");
-sim.claimMission(player.id, "first-100k");
-sim.leaderboard("wealth", 10);
-```
+SimKit is pre-1.0 and evolving in public. The runtime is being tested against different simulation domains to find which abstractions hold. The `experiments/` directory runs three sketches (life, startup, and university worlds) against the public API. Current gaps, found there and tracked below:
 
-## Defining your world
+- recurring obligations (rent, payroll) are expressed as events, not as schedules
+- there is no generic entity type beyond players, businesses, and NPCs
+- events can only reach a player by id, and their effect context is restricted
 
-Inline TypeScript (above), installable packs (below), or a single declarative file:
+## Roadmap
 
-```yaml
-# ilorin-life.yaml
-gameId: ilorin-life
-packs: [world-ilorin, jobs-nigerian-core, system-university]
-jobs:
-  - id: okada-rider
-    salary: 90000
-worldVersions:
-  - version: v1
-  - version: v2
-    jobs: [{ id: okada-rider, salary: 110000 }]
-```
-
-```ts
-import { loadGameConfigFile, createSimulationFromConfig } from "simkit";
-const { sim } = createSimulationFromConfig(await loadGameConfigFile("ilorin-life.yaml"));
-```
-
-## Marketplace packs
-
-Worlds, careers, systems, characters, and assets you install instead of building:
-
-```ts
-import { installPack, listPacks } from "simkit";
-
-listPacks("world"); // world-lagos, world-ilorin, world-abuja
-installPack(sim, "jobs-nigerian-core"); // danfo driver, software engineer, trader, doctor, banker, farmer, student
-installPack(sim, "system-nysc");        // allowee day, clearance wahala
-installPack(sim, "system-university");  // school fees, exams season, strike risk
-installPack(sim, "system-market");      // market boom, price crash, owambe season
-installPack(sim, "system-startup");     // founder life, demo day, seed-round dream
-installPack(sim, "characters-lagos");   // 3 NPCs, street food, buka business, first-₦100k mission
-installPack(sim, "assets-vehicles");    // okada → Benz
-installPack(sim, "assets-fashion");     // agbada, ankara, sneakers
-```
-
-## Server
-
-```bash
-npm run server
-```
-
-Opens the API on `http://localhost:8787`, plus two web UIs:
-
-- `/dashboard` — players, economy charts, leaderboards, realtime event log, and world controls (advance time, fund players, trigger events, set prices)
-- `/play` — Lagos Life Mini, a complete playable game running on the SDK
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `PORT` | `8787` | Listen port |
-| `SIMKIT_API_KEYS` | `simkit-dev` | Comma-separated API keys (`x-api-key` header or `Bearer`) |
-| `SIMKIT_NO_AUTH` | — | Set to `1` to disable auth for local dev |
-| `SIMKIT_DATA_DIR` | `./.simkit-data` | JSON snapshot directory |
-| `SIMKIT_SQLITE_PATH` | — | e.g. `./simkit.db` — durable single-file store instead |
-| `SIMKIT_CONFIG` | — | e.g. `./examples/ilorin-life.yaml` — boot an extra game from file |
-
-Persistence is whole-sim snapshots (JSON rows in SQLite, or one JSON file per game). Postgres remains the scale-out answer behind the `Store` interface.
-
-### API reference
-
-All `/v1/*` routes (except `/health`) require the API key. Below, `...` means `/v1/games/:gameId`.
-
-```bash
-curl -H "x-api-key: simkit-dev" http://localhost:8787/v1/games
-```
-
-**Games:** `GET /v1/games` · `POST /v1/games` · `POST /v1/games/from-config` · `GET /v1/games/:id` · `GET /health`
-
-**Insights:** `GET .../stats` · `.../analytics` (series, wealth buckets, retention) · `.../economy` (issuance, inflation, top jobs/assets, visits, activities) · `.../activation` (road to playable) · `.../leaderboards?metric=wealth&limit=10` · `GET .../log?limit=100` · `GET .../stream` (realtime SSE) · `GET .../snapshot`
-
-**Players:** `POST .../players` · `GET .../players` · `GET .../players/:pid` · `POST .../players/:pid/actions` (`work`, `travel`, `sleep`, `eat`, `accept-job`, `quit-job`) · `.../talk` · `.../buy` · `.../use` · `.../sell` · `.../transfer` · `GET .../players/:pid/rank`
-
-**Businesses & missions:** `GET .../businesses` · `POST .../players/:pid/businesses/:bid/buy` · `.../collect` · `GET .../players/:pid/missions` · `POST .../players/:pid/missions/:mid/accept` · `.../claim`
-
-**Trades:** `GET .../trades?playerId=` · `POST .../trades` · `POST .../trades/:tid/{accept,decline,cancel}`
-
-**World building:** `GET /v1/packs?kind=` · `POST .../packs/:packId/install` · `POST .../{npcs,items,businesses,missions}` · `GET .../versions` · `POST .../migrate {"target":"v2"}`
-
-**Console:** `POST .../console/{give-all,set-price,trigger,reset-economy}` · `POST .../advance {"days":7}`
-
-**Plans:** `GET .../usage` · `POST .../plan {"tier":"developer"}` — free → $29 developer → $99 pro → enterprise custom. Player and event quotas return `429` with upgrade guidance.
-
-## Production notes
-
-**Deterministic.** No `Math.random()` inside the sim — everything flows through a seeded RNG. Same seed plus same actions replays the exact event sequence. `sim.snapshot()` / `Sim.restore()` round-trip clock, players, world, RNG state, and event counts for debugging and replay.
-
-**Versioned worlds.** Rule changes ship as world versions and migrate live games: changed definitions upsert, holders of removed jobs move to a fallback (or quit gracefully), history untouched.
-
-```ts
-catalog.define("lagos-life", { version: "v2", jobs: [{ id: "danfo-driver", salary: 200000 }] });
-catalog.migrate(sim, "v2");
-```
-
-**Event-sourced.** Every meaningful state change is an entry in the event log — the basis for analytics, activation tracking, auditability, and multiplayer.
+- [x] Actions and rules pipeline with refusals and causal records
+- [x] Deterministic, seeded simulation
+- [x] Replay and explanations (per actor, per day window)
+- [ ] First-class entity and actor model
+- [ ] Recurring schedules (obligations, payroll)
+- [ ] Composable simulation systems
+- [ ] Causal chains across actions
+- [ ] Population simulation
+- [ ] Simulation testing
+- [ ] Simulation Control Room (pause, inspect, and step the world)
+- [ ] More domain packs
+- [ ] Engine and backend integrations
 
 ## Development
 
 ```bash
-npm run build   # compile the SDK to dist/
-npm test        # full suite (vitest)
-npm run example # run the Lagos Life Mini demo in your terminal
-npm run server  # API + dashboard + playable game
+npm run build      # compile to dist/
+npm test           # test suite
+npm run spike      # the three-domain experiment
+npm run server     # API, dashboard, and playable example
 ```
 
+```text
+src/          runtime, domain systems, packs, remote client
+server/       HTTP API, dashboard, persistence
+examples/     worked examples and config files
+experiments/  cross-domain experiments
+tests/        test suites
+docs/         API reference
 ```
-src/        SDK: simulation engine, entities, packs, remote client
-server/     API server, dashboard, playable game, persistence
-examples/   lagos-life-mini.ts, ilorin-life.yaml
-tests/      core, entities, server, and feature suites
-```
+
+## Philosophy
+
+Games shouldn't have to reinvent the machinery that makes their worlds behave.
+
+Define the world. Define the rules. Let SimKit run it.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

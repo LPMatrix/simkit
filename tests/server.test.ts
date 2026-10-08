@@ -200,6 +200,54 @@ describe("API server", () => {
     expect(Array.isArray(econ.topJobs)).toBe(true);
   });
 
+  it("runtime endpoints: actions, replay, explain, refusal as 400", async () => {
+    const headers = { "x-api-key": apiKey, "content-type": "application/json" };
+    const client = new SimClient({ baseUrl, apiKey, gameId: "test-lagos" });
+    const p = await client.createPlayer({ name: "Runner", location: "yaba" });
+
+    const actions = await (await fetch(`${baseUrl}/v1/games/test-lagos/actions`, { headers })).json();
+    expect(actions.actions.map((a: { id: string }) => a.id)).toContain("work");
+
+    const refused = await fetch(`${baseUrl}/v1/games/test-lagos/players/${p.id}/actions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ action: "work" }),
+    });
+    expect(refused.status).toBe(400);
+
+    await client.acceptJob(p.id, "danfo-driver");
+    await client.work(p.id);
+
+    const replay = await (await fetch(`${baseUrl}/v1/games/test-lagos/replay?actorId=${p.id}`, { headers })).json();
+    expect(replay.trace.at(-1)).toMatchObject({ actionId: "work", outcome: "ok" });
+    expect(replay.trace.at(-1).transactions.length).toBeGreaterThan(0);
+
+    const explain = await (await fetch(`${baseUrl}/v1/games/test-lagos/players/${p.id}/explain`, { headers })).json();
+    expect(explain.lines.map((l: { category: string }) => l.category)).toContain("salary");
+  });
+
+  it("generic action endpoint dispatches every registered action with 400/404 semantics", async () => {
+    const headers = { "x-api-key": apiKey, "content-type": "application/json" };
+    const client = new SimClient({ baseUrl, apiKey, gameId: "test-lagos" });
+    const p = await client.createPlayer({ name: "Dispatch", location: "yaba" });
+    const act = (body: unknown) =>
+      fetch(`${baseUrl}/v1/games/test-lagos/players/${p.id}/actions`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+
+    const bought = await act({ action: "buy", itemId: "amala", qty: 1 });
+    expect(bought.status).toBe(200);
+    expect((await bought.json()).player.inventory.items.amala).toBeGreaterThanOrEqual(1);
+
+    expect((await act({ action: "travel" })).status).toBe(400); // missing "to": request error
+    expect((await act({ action: "buy", itemId: "ghost" })).status).toBe(404);
+    expect((await act({ action: "teleport" })).status).toBe(404); // unknown action id
+    expect((await act({ action: "use", itemId: "gala" })).status).toBe(400); // no stock: refusal
+    expect((await act({})).status).toBe(400);
+  });
+
   it("world migration endpoint bumps rules safely", async () => {
     const headers = { "x-api-key": apiKey, "content-type": "application/json" };
     const bad = await fetch(`${baseUrl}/v1/games/test-lagos/migrate`, {

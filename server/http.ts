@@ -80,7 +80,7 @@ function errStatus(err: unknown): number {
     const s = (err as { status?: unknown }).status;
     if (typeof s === "number") return s;
   }
-  if (err instanceof Error && /Unknown (game|player|location|job|event)/.test(err.message)) return 404;
+  if (err instanceof Error && /Unknown (game|player|location|job|event|item|action|npc|NPC|business|mission|trade|pack)/.test(err.message)) return 404;
   if (err instanceof Error && /already exists|does not meet|Insufficient|Too tired|has no job/i.test(err.message)) return 400;
   return 500;
 }
@@ -293,42 +293,19 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
     // Generic action endpoint: { action, ...params }
     route("POST", "/v1/games/:gameId/players/:playerId/actions", async (_req, res, p, _url, body) => {
       const sim = registry.get(p.gameId);
-      const player = sim.players.get(p.playerId);
-      const b = asObject(body);
-      const action = b.action as string;
-      let result: unknown = null;
-      switch (action) {
-        case "work":
-          result = { pay: player.work() };
-          break;
-        case "travel":
-          if (typeof b.to !== "string") return send(res, 400, { error: "to (location id) required" });
-          player.travel(b.to);
-          break;
-        case "sleep":
-          player.sleep(typeof b.hours === "number" ? b.hours : 8);
-          break;
-        case "eat":
-          player.eat(
-            typeof b.cost === "number" ? b.cost : 1500,
-            typeof b.energyGain === "number" ? b.energyGain : 25,
-          );
-          break;
-        case "accept-job":
-        case "acceptJob":
-          if (typeof b.jobId !== "string") return send(res, 400, { error: "jobId required" });
-          player.acceptJob(b.jobId);
-          break;
-        case "quit-job":
-        case "quitJob":
-          player.quitJob();
-          break;
-        default:
-          return send(res, 400, { error: `Unknown action: ${action}` });
+      sim.players.get(p.playerId); // 404 on unknown player
+      const { action: rawAction, ...inputs } = asObject(body);
+      if (typeof rawAction !== "string" || !rawAction) {
+        return send(res, 400, { error: "action (string) is required" });
       }
-      await sim.players.save(player.id).catch(() => {});
+      // Legacy camelCase aliases map onto the registered action ids.
+      const aliases: Record<string, string> = { acceptJob: "accept-job", quitJob: "quit-job" };
+      const actionId = aliases[rawAction] ?? rawAction;
+      const value = sim.execute(p.playerId, actionId, inputs);
+      const result = actionId === "work" ? { pay: value } : (value ?? null);
+      await sim.players.save(p.playerId).catch(() => {});
       registry.schedulePersist(p.gameId);
-      send(res, 200, { player: player.toJSON(), result });
+      send(res, 200, { player: sim.players.get(p.playerId).toJSON(), result });
     }),
 
     route("POST", "/v1/games/:gameId/advance", async (_req, res, p, _url, body) => {
@@ -342,6 +319,41 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
       registry.meter.recordEvents(p.gameId, sim.eventLog.length - before);
       registry.schedulePersist(p.gameId);
       send(res, 200, { day: sim.clock.day, time: sim.clock.timeLabel, fired });
+    }),
+
+    route("POST", "/v1/games/:gameId/entities", async (_req, res, p, _url, body) => {
+      const sim = registry.get(p.gameId);
+      const entity = sim.entities.define(asObject(body) as never);
+      registry.schedulePersist(p.gameId);
+      send(res, 201, entity);
+    }),
+
+    route("GET", "/v1/games/:gameId/entities", (_req, res, p, url) => {
+      const kind = url.searchParams.get("kind") ?? undefined;
+      send(res, 200, { entities: registry.get(p.gameId).entities.list(kind) });
+    }),
+
+    route("GET", "/v1/games/:gameId/actions", (_req, res, p) => {
+      send(res, 200, { actions: registry.get(p.gameId).listActions() });
+    }),
+
+    route("GET", "/v1/games/:gameId/replay", (_req, res, p, url) => {
+      const sim = registry.get(p.gameId);
+      const num = (k: string): number | undefined => {
+        const v = url.searchParams.get(k);
+        return v == null || v === "" ? undefined : Number(v);
+      };
+      const actorId = url.searchParams.get("actorId") ?? undefined;
+      send(res, 200, { trace: sim.replay({ actorId, fromDay: num("fromDay"), toDay: num("toDay") }) });
+    }),
+
+    route("GET", "/v1/games/:gameId/players/:playerId/explain", (_req, res, p, url) => {
+      const sim = registry.get(p.gameId);
+      const num = (k: string): number | undefined => {
+        const v = url.searchParams.get(k);
+        return v == null || v === "" ? undefined : Number(v);
+      };
+      send(res, 200, sim.explain(p.playerId, { fromDay: num("fromDay"), toDay: num("toDay") }));
     }),
 
     route("GET", "/v1/games/:gameId/log", (_req, res, p, url) => {

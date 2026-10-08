@@ -89,8 +89,13 @@ export class EventEngine {
       this.triggerCounts.set(def.id, this.count(def.id) + 1);
       try {
         def.effect?.(ctx);
-      } catch {
-        // Event effects must never crash the simulation tick.
+      } catch (err) {
+        // A failing effect must not stop the tick, but it must not vanish either:
+        // a missed charge (e.g. rent with no money) is logged for the operator.
+        ctx.emit("EVENT_EFFECT_FAILED", {
+          eventId: def.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
       ctx.emit(`EVENT:${def.id}`, { name: def.name ?? def.id });
       fired.push(def.id);

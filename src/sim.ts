@@ -14,6 +14,18 @@ import { buildLeaderboard, LEADERBOARD_METRICS, type LeaderboardEntry, type Lead
 import type { NpcDef } from "./npcs.js";
 import type { CreatePlayerOptions, JobDef, LocationDef, SimConfig } from "./types.js";
 import type { SimLogEvent } from "./events.js";
+import { ActionRefused, invalidInput, type ActionDef, type CauseRecord } from "./runtime/action.js";
+import { CORE_ACTIONS } from "./runtime/core-actions.js";
+import { ENTITY_ACTIONS } from "./runtime/entity-actions.js";
+import { EntityRegistry, type Entity, type EntityDef } from "./entities.js";
+import { SIM_ACTIONS } from "./runtime/sim-actions.js";
+import type { Transaction } from "./wallet.js";
+
+/** A replayed action: its causal record plus the ledger entries and events it produced. */
+export interface CauseTrace extends CauseRecord {
+  transactions: Transaction[];
+  events: SimLogEvent[];
+}
 
 export interface SimSnapshot {
   gameId: string;
@@ -37,6 +49,9 @@ export interface SimSnapshot {
   worldVersion: string;
   history: DayStat[];
   lastRecordedDay: number;
+  causes?: CauseRecord[];
+  causeSeq?: number;
+  entities?: Entity[];
 }
 
 export type SimEventHandler = (event: SimLogEvent) => void;
@@ -90,6 +105,14 @@ export class Sim {
   /** Economy time-series (§7 observability). */
   history: DayStat[] = [];
   private lastRecordedDay = 1;
+  /** Registered actions and their causal records (runtime pipeline). */
+  private actions = new Map<string, ActionDef<unknown>>();
+  private causes: CauseRecord[] = [];
+  private causeSeq = 0;
+  /** Cause id of the action currently executing, so ledger entries can be linked to it. */
+  private activeCause: string | undefined;
+  /** Generic simulated things that are not players (courses, vehicles, ...). */
+  entities = new EntityRegistry();
 
   constructor(config: SimConfig, store?: Store) {
     this.gameId = config.gameId;
@@ -99,6 +122,7 @@ export class Sim {
     this.store = store ?? new InMemoryStore();
     if (config.startingLocation) this.world.define(config.startingLocation);
     this.wirePlayerFactory(config);
+    for (const action of [...CORE_ACTIONS, ...SIM_ACTIONS, ...ENTITY_ACTIONS]) this.defineAction(action);
   }
 
   private defaultStartingCash = 0;
@@ -196,25 +220,126 @@ export class Sim {
         for (let d = before; d < this.clock.day; d++) this.tickDay(d + 1);
         if (this.clock.day !== before) this.maybeRecordDays();
       },
-      travelCost: (toId: string) => {
-        const loc = this.world.get(toId);
-        return { cost: loc.travelCost, minutes: loc.travelTimeMinutes };
-      },
-      assertLocation: (id: string) => {
-        this.world.get(id);
-      },
-      assertJob: (id: string) => {
-        this.jobs.get(id);
-      },
-      dailyPay: (jobId: string) => this.jobs.dailyPay(jobId),
-      jobEnergyCost: (jobId: string) => this.jobs.get(jobId).energyCost,
-      jobWorkingHours: (jobId: string) => this.jobs.get(jobId).workingHours,
-      jobRequirements: (jobId: string) => this.jobs.get(jobId).requirements,
-      getItem: (id: string) => this.items.get(id),
-      log: (type, data, playerId) => {
-        this.emit(type, data, playerId);
-      },
+      execute: (actionId, inputs) => this.execute(player.id, actionId, inputs ?? {}),
+      cause: () => this.activeCause,
     };
+  }
+
+  // ---- actions (runtime pipeline) ----
+  /** Register an action. Built-in actions are installed automatically. */
+  defineAction<R>(def: ActionDef<R>): void {
+    if (!def.id) throw new Error("Action must have an id");
+    if (this.actions.has(def.id)) throw new Error(`Action already defined: ${def.id}`);
+    this.actions.set(def.id, def as ActionDef<unknown>);
+  }
+
+  listActions(): { id: string; description?: string }[] {
+    return [...this.actions.values()].map((a) => ({ id: a.id, description: a.description }));
+  }
+
+  /**
+   * Run an action for a player: check requirements, execute effects, and record
+   * a cause. Refused actions move nothing and throw `ActionRefused` (HTTP 400).
+   */
+  execute<R = unknown>(actorId: string, actionId: string, inputs: Record<string, unknown> = {}): R {
+    const def = this.actions.get(actionId);
+    if (!def) throw new Error(`Unknown action: ${actionId}`);
+    const actor = this.players.get(actorId);
+    // Resolve the target first. Unknown or wrong-kind ids are request errors (404).
+    let target: Entity | undefined;
+    if (def.targetKind) {
+      const targetId = inputs.target;
+      if (typeof targetId !== "string" || targetId === "") {
+        throw invalidInput("target (string) is required");
+      }
+      target = this.entities.get(targetId, def.targetKind);
+    }
+    // Malformed input or unknown ids throw here, before anything is recorded.
+    def.validate?.({ sim: this, actor, inputs, target });
+    const causeId = `cause_${++this.causeSeq}`;
+    const seqFrom = this.seq;
+    const base = {
+      id: causeId,
+      actionId,
+      actorId,
+      day: this.clock.day,
+      time: this.clock.timeLabel,
+      inputs: { ...inputs },
+    };
+
+    const failures = (def.requires ?? [])
+      .map((r) => r.check({ sim: this, actor, inputs, target }))
+      .filter((reason): reason is string => reason != null);
+    if (failures.length > 0) {
+      this.emit("ACTION_REFUSED", { actionId, reasons: failures, causeId }, actorId);
+      this.causes.push({ ...base, outcome: "refused", reasons: failures, seqFrom, seqTo: this.seq });
+      throw new ActionRefused(actionId, failures);
+    }
+
+    const previous = this.activeCause;
+    this.activeCause = causeId;
+    try {
+      const result = def.execute({ sim: this, actor, inputs, target, causeId });
+      this.emit("ACTION_EXECUTED", { actionId, causeId }, actorId);
+      this.causes.push({ ...base, outcome: "ok", reasons: [], seqFrom, seqTo: this.seq });
+      return result as R;
+    } finally {
+      this.activeCause = previous;
+    }
+  }
+
+  /** Causal records, oldest first. */
+  causalRecords(): readonly CauseRecord[] {
+    return this.causes;
+  }
+
+  /**
+   * Replay what happened: every action in the window, with the ledger entries
+   * and log events it produced. Filter by actor and/or game day (inclusive).
+   */
+  replay(opts: { actorId?: string; fromDay?: number; toDay?: number } = {}): CauseTrace[] {
+    const { actorId, fromDay = 1, toDay = Number.MAX_SAFE_INTEGER } = opts;
+    const ledger = [...this.playersMap.values()].flatMap((p) => p.wallet.history);
+    return this.causes
+      .filter((c) => (!actorId || c.actorId === actorId) && c.day >= fromDay && c.day <= toDay)
+      .map((c) => ({
+        ...c,
+        transactions: ledger.filter((t) => t.meta?.causeId === c.id),
+        events: this.log.filter((e) => e.seq > c.seqFrom && e.seq <= c.seqTo),
+      }));
+  }
+
+  /**
+   * Explain a player's money: net flow per category (salary, food, travel, ...)
+   * over an optional day window. Categories come from ledger reasons.
+   */
+  explain(playerId: string, opts: { fromDay?: number; toDay?: number } = {}): {
+    playerId: string;
+    fromDay: number;
+    toDay: number | null;
+    balance: number;
+    net: number;
+    lines: { category: string; credits: number; debits: number; net: number }[];
+  } {
+    const player = this.players.get(playerId);
+    const fromDay = opts.fromDay ?? 1;
+    const toDay = opts.toDay ?? null;
+    const txs = player.wallet.history.filter(
+      (t) => t.day >= fromDay && (toDay == null || t.day <= toDay),
+    );
+    const byCategory = new Map<string, { credits: number; debits: number }>();
+    for (const t of txs) {
+      const category = (t.reason ?? "other").split(":")[0];
+      const row = byCategory.get(category) ?? { credits: 0, debits: 0 };
+      if (t.type === "credit") row.credits += t.amount;
+      else row.debits += t.amount;
+      byCategory.set(category, row);
+    }
+    const lines = [...byCategory.entries()]
+      .map(([category, r]) => ({ category, ...r, net: r.credits - r.debits }))
+      .sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
+    const net = lines.reduce((s, l) => s + l.net, 0);
+    return { playerId, fromDay, toDay, balance: player.wallet.balance, net, lines };
   }
 
   // ---- simulation stepping ----
@@ -462,168 +587,55 @@ export class Sim {
     this.emit("PACK_INSTALLED", {});
   }
 
-  // ---- social: NPCs, relationships ----
-  /**
-   * Talk to an NPC. Requires being in the same location.
-   * Returns the (seeded, deterministic) dialogue line.
-   */
+  // ---- social, multiplayer, businesses, missions ----
+  // Each method below runs a registered action (src/runtime/sim-actions.ts), so
+  // it gets requirement checks, refusal records, and causal links. The methods
+  // keep the public Sim API stable.
+
+  /** Talk to an NPC in the same location. Returns the seeded dialogue line. */
   talk(playerId: string, npcId: string): { line: string; score: number; level: string } {
-    const player = this.players.get(playerId);
-    const npc = this.npcs.get(npcId);
-    if (npc.location && npc.location !== player.locationId) {
-      throw new Error(`${npc.name} is at ${npc.location} — travel there first`);
-    }
-    player.touch();
-    const before = player.relationships.level(npcId);
-    const line = this.rng.pick(npc.dialogue);
-    this.clock.advanceMinutes(15);
-    const score = player.relationships.adjust(npcId, 6);
-    const level = player.relationships.level(npcId);
-    this.emit("PLAYER_TALKED", { npcId, line, score }, playerId);
-    if (level !== before) {
-      player.adjustReputation(5);
-      this.emit("RELATIONSHIP_LEVEL_UP", { npcId, level }, playerId);
-    }
-    return { line, score, level };
+    return this.execute<{ line: string; score: number; level: string }>(playerId, "talk", { npcId });
   }
 
-  // ---- multiplayer: player-to-player transfers ----
-  /** Atomic P2P payment. Creates paired debit/credit transactions. */
+  /** Atomic player-to-player payment. */
   transfer(fromId: string, toId: string, amount: number, reason = "transfer"): void {
-    if (fromId === toId) throw new Error("Cannot transfer to yourself");
-    if (!(amount > 0)) throw new Error("Transfer amount must be positive");
-    const from = this.players.get(fromId);
-    const to = this.players.get(toId);
-    from.touch();
-    to.touch();
-    const day = this.clock.day;
-    const time = this.clock.timeLabel;
-    from.wallet.debit(amount, { reason: `${reason}:to:${toId}`, day, time });
-    to.wallet.credit(amount, { reason: `${reason}:from:${fromId}`, day, time });
-    this.emit("WALLET_DEBITED", { amount, reason }, fromId);
-    this.emit("WALLET_CREDITED", { amount, reason }, toId);
-    this.emit("PLAYER_TRANSFERRED", { from: fromId, to: toId, amount }, fromId);
+    this.execute(fromId, "transfer", { to: toId, amount, reason });
   }
 
-  // ---- multiplayer: trade offers (propose / accept / decline) ----
-  /** Propose a cash+item swap. The offer side is validated now AND at acceptance. */
+  /** Propose a cash+item swap. Affordability is checked now and again at acceptance. */
   offerTrade(fromId: string, toId: string, terms: TradeTerms): TradeOffer {
-    const from = this.players.get(fromId);
-    this.players.get(toId); // fail fast on unknown counterparty
-    if ((terms.offerCash ?? 0) > from.wallet.balance) {
-      throw new Error("You can't afford what you're offering");
-    }
-    for (const [id, qty] of Object.entries(terms.offerItems ?? {})) {
-      if (from.inventory.count(id) < qty) throw new Error(`You don't have ${qty}x ${id}`);
-    }
-    const offer = this.trades.propose(fromId, toId, terms, this.clock.day);
-    from.touch();
-    this.emit("TRADE_PROPOSED", { tradeId: offer.id, to: toId }, fromId);
-    return offer;
+    return this.execute<TradeOffer>(fromId, "trade-offer", { to: toId, ...terms });
   }
 
   /** Counterparty accepts: all legs move atomically or nothing does. */
   acceptTrade(tradeId: string, byPlayerId: string): TradeOffer {
-    const offer = this.trades.get(tradeId);
-    if (offer.status !== "pending") throw new Error(`Trade is already ${offer.status}`);
-    if (offer.to !== byPlayerId) throw new Error("Only the counterparty can accept");
-    const from = this.players.get(offer.from);
-    const to = this.players.get(offer.to);
-    if (from.wallet.balance < offer.offerCash) {
-      throw new Error(`${from.name} can no longer afford this trade`);
-    }
-    if (to.wallet.balance < offer.askCash) {
-      throw new Error(`${to.name} can no longer afford this trade`);
-    }
-    for (const [id, qty] of Object.entries(offer.offerItems)) {
-      if (from.inventory.count(id) < qty) throw new Error(`${from.name} no longer has ${qty}x ${id}`);
-    }
-    for (const [id, qty] of Object.entries(offer.askItems)) {
-      if (to.inventory.count(id) < qty) throw new Error(`${to.name} no longer has ${qty}x ${id}`);
-    }
-    const stamp = { day: this.clock.day, time: this.clock.timeLabel };
-    const moveCash = (a: typeof from, b: typeof to, amount: number): void => {
-      if (amount <= 0) return;
-      a.wallet.debit(amount, { reason: `trade:${tradeId}:to:${b.id}`, ...stamp });
-      b.wallet.credit(amount, { reason: `trade:${tradeId}:from:${a.id}`, ...stamp });
-    };
-    moveCash(from, to, offer.offerCash);
-    moveCash(to, from, offer.askCash);
-    const moveItems = (a: typeof from, b: typeof to, items: Record<string, number>): void => {
-      for (const [id, qty] of Object.entries(items)) {
-        a.inventory.remove(id, qty);
-        b.inventory.add(id, qty);
-      }
-    };
-    moveItems(from, to, offer.offerItems);
-    moveItems(to, from, offer.askItems);
-    from.touch();
-    to.touch();
-    this.trades.markAccepted(tradeId);
-    this.emit("TRADE_ACCEPTED", { tradeId, from: from.id, to: to.id }, to.id);
-    return this.trades.get(tradeId);
+    return this.execute<TradeOffer>(byPlayerId, "trade-accept", { tradeId });
   }
 
   declineTrade(tradeId: string, byPlayerId: string): TradeOffer {
-    const offer = this.trades.decline(tradeId, byPlayerId);
-    this.emit("TRADE_DECLINED", { tradeId }, byPlayerId);
-    return offer;
+    return this.execute<TradeOffer>(byPlayerId, "trade-decline", { tradeId });
   }
 
   cancelTrade(tradeId: string, byPlayerId: string): TradeOffer {
-    const offer = this.trades.cancel(tradeId, byPlayerId);
-    this.emit("TRADE_CANCELLED", { tradeId }, byPlayerId);
-    return offer;
+    return this.execute<TradeOffer>(byPlayerId, "trade-cancel", { tradeId });
   }
 
   listTrades(playerId?: string): TradeOffer[] {
     return this.trades.pendingFor(playerId);
   }
 
-  // ---- businesses ----
+  /** Buy an unowned business. */
   buyBusiness(playerId: string, businessId: string): void {
-    const player = this.players.get(playerId);
-    const biz = this.businesses.get(businessId);
-    if (biz.ownerId) throw new Error(`${biz.name} is already owned`);
-    player.touch();
-    player.wallet.debit(biz.cost, {
-      reason: `business:${businessId}`,
-      day: this.clock.day,
-      time: this.clock.timeLabel,
-    });
-    biz.ownerId = playerId;
-    biz.lastCollectedDay = this.clock.day;
-    this.emit("BUSINESS_BOUGHT", { businessId, cost: biz.cost }, playerId);
+    this.execute(playerId, "business-buy", { businessId });
   }
 
-  /** Collect accrued daily income since last collection. */
+  /** Collect accrued daily income since the last collection. */
   collectIncome(playerId: string, businessId: string): number {
-    const player = this.players.get(playerId);
-    const biz = this.businesses.get(businessId);
-    if (biz.ownerId !== playerId) throw new Error(`You don't own ${biz.name}`);
-    player.touch();
-    const days = this.clock.day - biz.lastCollectedDay;
-    if (days <= 0) throw new Error(`${biz.name} has nothing to collect yet — come back tomorrow`);
-    const payout = biz.dailyIncome * days;
-    biz.lastCollectedDay = this.clock.day;
-    player.wallet.credit(payout, {
-      reason: `business-income:${businessId}`,
-      day: this.clock.day,
-      time: this.clock.timeLabel,
-    });
-    this.emit("BUSINESS_INCOME", { businessId, days, payout }, playerId);
-    return payout;
+    return this.execute<number>(playerId, "business-collect", { businessId });
   }
 
-  // ---- missions ----
   acceptMission(playerId: string, missionId: string): void {
-    const player = this.players.get(playerId);
-    this.missions.get(missionId);
-    player.touch();
-    const state = (player.missions[missionId] ??= { accepted: false, claimed: false });
-    if (state.accepted) throw new Error("Mission already accepted");
-    state.accepted = true;
-    this.emit("MISSION_ACCEPTED", { missionId }, playerId);
+    this.execute(playerId, "mission-accept", { missionId });
   }
 
   missionProgress(playerId: string, missionId: string): { current: number; target: number; done: boolean } {
@@ -657,25 +669,9 @@ export class Sim {
     return { current, target, done: current >= target };
   }
 
-  /** Claim a completed mission: cash reward + XP. */
+  /** Claim a completed mission: cash reward + XP, once. */
   claimMission(playerId: string, missionId: string): number {
-    const player = this.players.get(playerId);
-    const mission = this.missions.get(missionId);
-    player.touch();
-    const state = player.missions[missionId];
-    if (!state?.accepted) throw new Error("Mission not accepted yet");
-    if (state.claimed) throw new Error("Mission reward already claimed");
-    const { done } = this.missionProgress(playerId, missionId);
-    if (!done) throw new Error("Mission goal not complete yet");
-    state.claimed = true;
-    player.wallet.credit(mission.reward, {
-      reason: `mission:${missionId}`,
-      day: this.clock.day,
-      time: this.clock.timeLabel,
-    });
-    player.progression.addXp(mission.xp ?? 20);
-    this.emit("MISSION_COMPLETED", { missionId, reward: mission.reward }, playerId);
-    return mission.reward;
+    return this.execute<number>(playerId, "mission-claim", { missionId });
   }
 
   // ---- observability (dashboard primitives) ----
@@ -731,6 +727,9 @@ export class Sim {
       worldVersion: this.worldVersion,
       history: [...this.history],
       lastRecordedDay: this.lastRecordedDay,
+      causes: [...this.causes],
+      entities: this.entities.toJSON(),
+      causeSeq: this.causeSeq,
     };
   }
 
@@ -753,6 +752,9 @@ export class Sim {
     sim.seq = snapshot.log.length;
     sim.playerSeq = snapshot.playerSeq;
     sim.worldVersion = snapshot.worldVersion ?? "v1";
+    sim.causes = [...(snapshot.causes ?? [])];
+    sim.causeSeq = snapshot.causeSeq ?? sim.causes.length;
+    sim.entities = EntityRegistry.fromJSON(snapshot.entities);
     sim.history = [...(snapshot.history ?? [])];
     sim.lastRecordedDay = snapshot.lastRecordedDay ?? snapshot.clock.day;
     sim.playersMap.clear();
@@ -786,6 +788,7 @@ export function createSimulation(opts: {
   items?: ItemDef[];
   businesses?: BusinessDef[];
   missions?: MissionDef[];
+  entities?: EntityDef[];
   store?: Store;
 }): Sim {
   const sim = new Sim(
@@ -805,5 +808,6 @@ export function createSimulation(opts: {
   for (const item of opts.items ?? []) sim.items.define(item);
   for (const biz of opts.businesses ?? []) sim.businesses.define(biz);
   for (const mission of opts.missions ?? []) sim.missions.define(mission);
+  for (const entity of opts.entities ?? []) sim.entities.define(entity);
   return sim;
 }

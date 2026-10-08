@@ -1,7 +1,7 @@
 {
   "name": "simkit",
   "version": "0.6.0",
-  "description": "Simulation primitives for life / economy / city sim games. Build Nigerian life sims in days, not months.",
+  "description": "Build the rules. SimKit runs the world. A TypeScript simulation runtime and domain SDK for systemic worlds.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,15 +20,18 @@
     "example": "tsx examples/lagos-life-mini.ts",
     "server": "tsx server/main.ts",
     "typecheck": "tsc --noEmit && tsx --eval \"import('typescript').then(async () => {})\"",
-    "typecheck:all": "npx tsc --noEmit -p tsconfig.all.json"
+    "typecheck:all": "npx tsc --noEmit -p tsconfig.all.json",
+    "spike": "tsx experiments/run.ts"
   },
   "keywords": [
-    "sim",
+    "simulation",
+    "simulation-runtime",
     "game",
     "economy",
-    "simulation",
-    "nigeria",
-    "sdk"
+    "agent-based",
+    "deterministic",
+    "replay",
+    "typescript"
   ],
   "license": "MIT",
   "devDependencies": {
