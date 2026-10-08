@@ -58,8 +58,9 @@ export class SimClient {
     });
   }
 
-  listPlayers(): Promise<{ players: RemotePlayer[] }> {
-    return this.req(`/v1/games/${this.gameId}/players`);
+  listPlayers(limit?: number): Promise<{ players: RemotePlayer[]; total: number }> {
+    const q = limit != null ? `?limit=${limit}` : "";
+    return this.req(`/v1/games/${this.gameId}/players${q}`);
   }
 
   getPlayer(id: string): Promise<RemotePlayer> {

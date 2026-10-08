@@ -85,7 +85,7 @@
 
   <div class="row">
     <div class="card">
-      <h2>Players</h2>
+      <h2>Players <span class="mut" id="playersTotal"></span></h2>
       <div class="toolbar" style="margin-bottom:8px">
         <input id="newName" placeholder="New player name" />
         <button data-act="create">Create</button>
@@ -150,7 +150,7 @@ async function refresh() {
   const g = state.game;
   const [info, players, log, analytics, board, economy] = await Promise.all([
     api(`/v1/games/${g}`),
-    api(`/v1/games/${g}/players`),
+    api(`/v1/games/${g}/players?limit=500`),
     api(`/v1/games/${g}/log?limit=80`),
     api(`/v1/games/${g}/analytics`),
     api(`/v1/games/${g}/leaderboards?metric=${$("boardMetric").value}&limit=10`),
@@ -171,6 +171,9 @@ async function refresh() {
     ["Avg level", info.stats.avgLevel.toFixed(1)],
   ].map(([k, v]) => `<div class="card"><h2>${k}</h2><div class="big">${v}</div></div>`).join("")
     + `<div class="card"><h2>Events</h2><div class="mut">${Object.entries(info.stats.eventCounts).map(([k, v]) => `${k}: ${v}`).join("<br>") || "none yet"}</div></div>`;
+  $("playersTotal").textContent = players.total > players.players.length
+    ? `showing ${players.players.length} of ${players.total} — use Inspect to find others`
+    : `(${players.total})`;
   $("players").innerHTML = players.players.map(p =>
     `<tr><td><button class="ghost" data-inspect="${p.id}">${esc(p.name)}</button></td><td>${p.wallet.balance.toLocaleString()}</td><td>${p.locationId}</td><td>${p.jobId || "—"}</td>
      <td><button class="ghost" data-p="${p.id}" data-do="work">work</button>

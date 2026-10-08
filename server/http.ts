@@ -53,10 +53,21 @@ function sendHtml(res: ServerResponse, html: string): void {
   res.end(html);
 }
 
+const MAX_BODY_BYTES = 1024 * 1024; // 1MB: bodies are small JSON definitions
+
 async function readBody(req: IncomingMessage): Promise<unknown> {
   if (req.method === "GET" || req.method === "HEAD" || req.method === "DELETE") return null;
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > MAX_BODY_BYTES) {
+      const err = new Error("Request body too large (max 1MB)") as Error & { status?: number };
+      err.status = 413;
+      throw err;
+    }
+    chunks.push(chunk as Buffer);
+  }
   if (chunks.length === 0) return null;
   const raw = Buffer.concat(chunks).toString("utf8");
   if (!raw) return null;
@@ -282,9 +293,19 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
       send(res, 201, player.toJSON());
     }),
 
-    route("GET", "/v1/games/:gameId/players", async (_req, res, p) => {
+    route("GET", "/v1/games/:gameId/players", async (_req, res, p, url) => {
       const sim = registry.get(p.gameId);
-      send(res, 200, { players: sim.players.list().map((pl) => pl.toJSON()) });
+      const all = sim.players.list();
+      const rawLimit = url.searchParams.get("limit");
+      let limit = all.length;
+      if (rawLimit != null) {
+        const n = Number(rawLimit);
+        if (!Number.isInteger(n) || n <= 0) {
+          return send(res, 400, { error: "limit must be a positive integer" });
+        }
+        limit = Math.min(10000, n);
+      }
+      send(res, 200, { players: all.slice(0, limit).map((pl) => pl.toJSON()), total: all.length });
     }),
 
     route("GET", "/v1/games/:gameId/players/:playerId", (_req, res, p) => {
@@ -718,9 +739,13 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
         const m = r.pattern.exec(pathname);
         if (!m) continue;
         const params: Record<string, string> = {};
-        r.keys.forEach((k, i) => {
-          params[k] = decodeURIComponent(m[i + 1]);
-        });
+        try {
+          r.keys.forEach((k, i) => {
+            params[k] = decodeURIComponent(m[i + 1]);
+          });
+        } catch {
+          return send(res, 400, { error: "Invalid path encoding" });
+        }
         if (params.gameId) registry.meter.recordApi(params.gameId);
         // Paused worlds reject mutation with 423; reads, pause, and resume pass through.
         if (

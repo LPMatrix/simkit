@@ -366,4 +366,29 @@ describe("API server", () => {
       "console",
     );
   });
+
+  it("hardens the HTTP boundary: body cap, path encoding, and list limits", async () => {
+    const headers = { "x-api-key": apiKey, "content-type": "application/json" };
+    const client = new SimClient({ baseUrl, apiKey, gameId: "test-lagos" });
+    await client.createPlayer({ name: "A" });
+    await client.createPlayer({ name: "B" });
+    await client.createPlayer({ name: "C" });
+
+    const big = await fetch(`${baseUrl}/v1/games/test-lagos/players`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "x".repeat(1024 * 1024 + 1) }),
+    });
+    expect(big.status).toBe(413);
+
+    const badPath = await fetch(`${baseUrl}/v1/games/test-lagos/players/%ZZ`, { headers });
+    expect(badPath.status).toBe(400);
+
+    const limited = await client.listPlayers(2);
+    expect(limited.players).toHaveLength(2);
+    expect(limited.total).toBeGreaterThanOrEqual(3);
+
+    const badLimit = await fetch(`${baseUrl}/v1/games/test-lagos/players?limit=zero`, { headers });
+    expect(badLimit.status).toBe(400);
+  });
 });

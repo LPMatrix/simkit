@@ -20,6 +20,7 @@ Errors are JSON `{ "error": "message" }`:
 | 401 | Missing or invalid API key |
 | 404 | Unknown game, player, actor, location, job, item, action, NPC, business, mission, trade, schedule, or pack |
 | 409 | Game already exists |
+| 413 | Request body over 1MB |
 | 423 | World is paused for inspection (mutation blocked, reads pass) |
 | 429 | Plan limit reached |
 
@@ -39,7 +40,7 @@ Errors are JSON `{ "error": "message" }`:
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `.../players` | Create a player: `{ name, location?, startingCash? }` |
-| GET | `.../players` | List players |
+| GET | `.../players?limit=` | List players (capped at 10000 per page) with `total` |
 | GET | `.../players/:pid` | Player detail |
 | GET | `.../actors/:aid` | Any actor: player or NPC (for the inspector) |
 | POST | `.../players/:pid/actions` | Run any registered action: `{ action, ...inputs }`. `:pid` is a player id or an NPC id acting on its own; unknown ids return 404 |

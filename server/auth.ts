@@ -17,23 +17,6 @@ export function authFromEnv(): AuthConfig {
   return { apiKeys: keys, required: !noAuth };
 }
 
-export function extractKey(req: Request | { headers: Record<string, string | string[] | undefined> }): string | null {
-  const headers =
-    req instanceof Request ? req.headers : (req.headers as Record<string, unknown>);
-  const get = (name: string): string | null => {
-    if (req instanceof Request) return req.headers.get(name);
-    const v = (headers as Record<string, unknown>)[name] ??
-      (headers as Record<string, unknown>)[name.toLowerCase()];
-    if (Array.isArray(v)) return (v[0] as string) ?? null;
-    return (v as string) ?? null;
-  };
-  const headerKey = get("x-api-key");
-  if (headerKey) return headerKey;
-  const auth = get("authorization");
-  if (auth?.startsWith("Bearer ")) return auth.slice(7);
-  return null;
-}
-
 export function isAuthorized(req: Request, cfg: AuthConfig): boolean {
   if (!cfg.required) return true;
   const key = req.headers.get("x-api-key") ?? keyFromBearer(req);
