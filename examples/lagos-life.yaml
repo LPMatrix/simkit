@@ -1,0 +1,23 @@
+# Lagos Life — reference world for population runs.
+# npx simkit simulate --config ./examples/lagos-life.yaml --population 1000 --days 365 --seeds 10
+gameId: lagos-life
+currency: NGN
+seed: 42
+startingCash: 50000
+packs:
+  - world-lagos
+  - jobs-nigerian-core
+  - characters-lagos
+jobs:
+  - id: software-developer
+    name: Software Developer
+    salary: 350000
+    location: yaba
+    workingHours: 8
+    energyCost: 25
+    requirements:
+      coding: 50
+events:
+  - id: fuel-crisis
+    name: Fuel Price Increase
+    probability: 0.05

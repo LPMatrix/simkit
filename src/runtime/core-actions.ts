@@ -33,6 +33,29 @@ function priced(sim: { priceModifiers: Record<string, number> }, key: string, ba
   return Math.round(base * (sim.priceModifiers[key] ?? 1));
 }
 
+/**
+ * Link the running action to whatever set a price modifier, when the
+ * modifier actually changed the price. Silent when prices are unmodified.
+ */
+function linkModifier(
+  sim: {
+    priceModifiers: Record<string, number>;
+    priceSources: Record<string, { day: number; origin: string; eventSeq?: number }>;
+    modifierLabel: (key: string) => string;
+    addLink: (link: { kind: "modifier"; label: string; category: string; eventSeq?: number }) => void;
+  },
+  key: string,
+  category: string,
+): void {
+  if ((sim.priceModifiers[key] ?? 1) === 1) return;
+  sim.addLink({
+    kind: "modifier",
+    label: sim.modifierLabel(key),
+    category,
+    eventSeq: sim.priceSources[key]?.eventSeq,
+  });
+}
+
 /** Cost of travelling to `inputs.to`; free when already there. */
 function travelCostOf(ctx: RequirementContext): number {
   const to = ctx.inputs.to as string;
@@ -76,6 +99,7 @@ export const travelAction: ActionDef<void> = {
     if (to === actor.locationId) return;
     const loc = sim.world.get(to);
     const cost = priced(sim, "transport", loc.travelCost);
+    linkModifier(sim, "transport", "travel");
     if (cost > 0) {
       actor.wallet.debit(cost, actor.stamp(`travel:${actor.locationId}->${to}`));
     }
@@ -171,6 +195,7 @@ export const buyAction: ActionDef<void> = {
     const itemId = inputs.itemId as string;
     const qty = positiveQty(inputs);
     const cost = priced(sim, "goods", sim.items.get(itemId).price) * qty;
+    linkModifier(sim, "goods", "buy");
     actor.touch();
     actor.wallet.debit(cost, actor.stamp(`buy:${itemId}x${qty}`));
     actor.inventory.add(itemId, qty);
@@ -213,6 +238,7 @@ export const sellAction: ActionDef<number> = {
     const itemId = inputs.itemId as string;
     const qty = positiveQty(inputs);
     const price = priced(sim, "goods", sim.items.get(itemId).price);
+    linkModifier(sim, "goods", "sell");
     actor.touch();
     actor.inventory.remove(itemId, qty);
     const gain = Math.floor((price * qty) / 2);

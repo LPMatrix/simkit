@@ -58,9 +58,9 @@ describe("economy observability", () => {
     sim.console.setPrice("transport", 1.2);
 
     const e = sim.economics();
-    expect(e.issued).toBe(10000);
+    expect(e.issued).toBe(30000); // 20000 genesis funding + 10000 salary
     expect(e.destroyed).toBe(1500);
-    expect(e.net).toBe(8500);
+    expect(e.net).toBe(28500);
     expect(e.inflationPct).toBe(20);
     expect(e.topJobs[0]).toMatchObject({ id: "banker", dailyPay: 10000 });
     expect(e.locations.find((l) => l.id === "yaba")).toMatchObject({ residents: 0, visits: 1 });

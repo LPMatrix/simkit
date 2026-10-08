@@ -134,11 +134,11 @@ export const tradeOfferAction: ActionDef<TradeOffer> = {
       },
     },
   ],
-  execute({ sim, actor, inputs }) {
+  execute({ sim, actor, inputs, causeId }) {
     const to = str(inputs, "to");
     const offer = sim.trades.propose(actor.id, to, termsOf(inputs), sim.clock.day);
     actor.touch();
-    sim.emit("TRADE_PROPOSED", { tradeId: offer.id, to }, actor.id);
+    sim.emit("TRADE_PROPOSED", { tradeId: offer.id, to, causeId }, actor.id);
     return offer;
   },
 };
@@ -225,6 +225,17 @@ export const tradeAcceptAction: ActionDef<TradeOffer> = {
     from.touch();
     to.touch();
     sim.trades.markAccepted(tradeId);
+    const proposed = sim.eventLog.find(
+      (e) => e.type === "TRADE_PROPOSED" && (e.data as { tradeId?: string } | undefined)?.tradeId === tradeId,
+    );
+    const proposeCause = (proposed?.data as { causeId?: string } | undefined)?.causeId;
+    if (proposeCause) {
+      sim.addLink({
+        kind: "trade",
+        causeId: proposeCause,
+        label: `accepts ${tradeId} proposed on day ${proposed?.day}`,
+      });
+    }
     sim.emit("TRADE_ACCEPTED", { tradeId, from: from.id, to: to.id }, to.id);
     return sim.trades.get(tradeId);
   },

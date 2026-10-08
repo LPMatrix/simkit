@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "reason": "v2 adds the paused flag to snapshots (Control Room freeze for inspection). Proven: stripping paused reproduces the v1 hashes exactly.",
+  "cases": [
+    {
+      "name": "lagos-30d",
+      "seed": 42,
+      "hash": "d7d4732a5c0e15faa315635e85af762b6fae72a5664773423164fed61b0387d7"
+    },
+    {
+      "name": "lagos-30d-alt-seed",
+      "seed": 7,
+      "hash": "c885a023c30bddc1f47b3d62bf508d4ecd80204030f70d1bf1f511fa06a3455a"
+    }
+  ]
+}

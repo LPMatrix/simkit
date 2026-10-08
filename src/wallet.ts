@@ -82,9 +82,10 @@ export class Wallet {
     }
   }
 
+  /** Earnings through play. Genesis funding (starting cash) is money supply, not earnings. */
   totalEarned(): number {
     return this.history
-      .filter((t) => t.type === "credit")
+      .filter((t) => t.type === "credit" && t.reason !== "genesis")
       .reduce((s, t) => s + t.amount, 0);
   }
 

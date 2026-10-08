@@ -116,9 +116,11 @@ console.log(world.replay({ actorId: alice.id }));     // every action, with its 
 
 **State.** Players, businesses, NPCs, items, and jobs are plain data behind a small API. Any other kind of thing (a course, a vehicle) is an entity: an action can target it with `targetKind`, and the runtime resolves and validates it before any rule runs. Money lives in an auditable ledger, where each entry records its reason, time, and the action that caused it.
 
+**Systems.** Behavior installs as systems with `world.use()`: actions enter the pipeline, schedules start ticking, and an `onTick` hook runs once per game day after events and settlements. The ten built-in systems (jobs, needs, world, market, social, economy, trades, business, missions, entities) load through this same path. A throwing hook is logged as `SYSTEM_TICK_FAILED` and skipped — one bad system never stalls the world.
+
 **Events.** Declarative world events with probability, cooldown, conditions, and effects. Effects can change prices (`priceModifiers`) that actions apply at execution time. If an effect fails, the tick continues and an `EVENT_EFFECT_FAILED` entry is logged.
 
-**Randomness.** All randomness goes through a seeded RNG (`world.rng`). Given the same seed and the same sequence of actions, you get the same results. This is covered by tests; there are no golden fingerprints yet.
+**Randomness.** All randomness goes through a seeded RNG (`world.rng`). Given the same seed and the same sequence of actions, you get the same results. `tests/fingerprints.json` pins reference-world hashes: a changed hash fails the build unless `SIMULATION_VERSION` is bumped and the reason recorded.
 
 **Persistence.** `world.snapshot()` and `Sim.restore()` round-trip the whole world, including causal records. The server stores snapshots in SQLite or JSON files. Postgres is the planned scale-out path behind the `Store` interface.
 
@@ -126,13 +128,18 @@ console.log(world.replay({ actorId: alice.id }));     // every action, with its 
 
 ```ts
 world.explain(alice.id, { fromDay: 1, toDay: 7 });
-// { balance, net, lines: [{ category: "salary", credits, debits, net }, ...] }
+// { balance, net, lines: [{ category: "salary", credits, debits, net, why? }, ...] }
 
 world.replay({ actorId: alice.id, fromDay: 1, toDay: 7 });
-// [{ actionId, outcome, transactions, events, ... }, ...]
+// [{ actionId, outcome, transactions, events, links, ... }, ...]
+
+world.replayGraph({ actorId: alice.id });
+// { nodes: [...actions + referenced events], edges: [{ from, to, kind, label }] }
 ```
 
-Replay returns the recorded actions and what each one produced. It does not reconstruct arbitrary past state, and it doesn't yet model causal chains across actions, such as a fuel price rise leading to debt. Those are on the roadmap.
+Replay returns the recorded actions and what each one produced. It does not reconstruct arbitrary past state.
+
+Actions that were shaped by earlier triggers carry links: travel under raised transport prices points at the event (or console call, or system) that set them, and a trade acceptance points at its proposal. `explain` attaches those labels to the affected money lines, so a travel line can say why it cost more. `replayGraph` returns the same links as traversable edges.
 
 ## Domain systems
 
@@ -157,7 +164,7 @@ Lagos Life, Ilorin Life, and the other packs are examples of how these systems a
 ## Tools
 
 - **Server**: `npm run server` starts an HTTP API with API-key auth, realtime event streams, and a dashboard at `/dashboard`.
-- **Dashboard**: game state, economy charts, leaderboards, the event log, and world controls (advance time, fund players, trigger events, set prices).
+- **Dashboard**: game state, economy charts, leaderboards, the event log, world controls (advance time, fund players, trigger events, set prices), pause/resume, and an inspector — pick any player or NPC, see their money explained, and browse their actions with causal links.
 - **Client**: `SimClient` mirrors the local API over HTTP, so the same game code can run embedded or hosted.
 - **Simulation console**: `world.console` for dev-time control (give money, set prices, trigger events, advance time).
 
@@ -198,11 +205,11 @@ SimKit is pre-1.0 and evolving in public. The runtime is being tested against di
 - [x] Replay and explanations (per actor, per day window)
 - [x] First-class entity and actor model
 - [x] Recurring schedules (obligations, payroll)
-- [ ] Composable simulation systems
-- [ ] Causal chains across actions
-- [ ] Population simulation
-- [ ] Simulation testing
-- [ ] Simulation Control Room (pause, inspect, and step the world)
+- [x] Composable simulation systems
+- [x] Causal chains across actions
+- [x] Population simulation
+- [x] Simulation testing
+- [x] Simulation Control Room (pause, inspect, and step the world)
 - [ ] More domain packs
 - [ ] Engine and backend integrations
 
@@ -213,6 +220,7 @@ npm run build      # compile to dist/
 npm test           # test suite
 npm run spike      # the three-domain experiment
 npm run server     # API, dashboard, and playable example
+npm run simulate -- --config ./examples/lagos-life.yaml --population 100 --days 30 --seeds 3
 ```
 
 ```text
@@ -220,9 +228,33 @@ src/          runtime, domain systems, packs, remote client
 server/       HTTP API, dashboard, persistence
 examples/     worked examples and config files
 experiments/  cross-domain experiments
-tests/        test suites
+tests/        test suites (including golden fingerprints in tests/fingerprints.json)
 docs/         API reference
 ```
+
+`sim.checkInvariants()` verifies money conservation (starting cash is funded as a `genesis` ledger entry, so issued − destroyed always equals total balance), no negative balances, and ledger entry shape. Worlds created before genesis accounting predate the conservation check.
+
+## Population runs
+
+`simulate()` runs headless worlds for balancing: N agents follow a daily routine for D days across several seeds, and the report aggregates wealth, employment, bankruptcy, obligations, and invariant violations.
+
+```ts
+import { simulate } from "simkit";
+
+const report = await simulate({
+  world: cfg, // a GameConfigFile, or (seed) => Sim factory
+  population: 1000,
+  days: 365,
+  seeds: [1, 2, 3],
+  // behavior, employ: "auto" | "none"
+});
+```
+
+```bash
+npx simkit simulate --config ./examples/lagos-life.yaml --population 1000 --days 365 --seeds 10
+```
+
+Each loop iteration is exactly one clock day: intraday time is suspended during the run (energy, money, and state effects still apply) so sequential agents don't advance the shared clock faster than the loop. Days advance explicitly, and every settlement, event, and hook fires exactly once per day. The default routine works, sleeps, and eats; pass `behavior` to test your own policies. Runs that violate invariants are flagged in the report instead of failing silently.
 
 ## Philosophy
 

@@ -18,8 +18,9 @@ Errors are JSON `{ "error": "message" }`:
 |---|---|
 | 400 | Invalid input, or an action was refused by a rule (see `reasons` in the message) |
 | 401 | Missing or invalid API key |
-| 404 | Unknown game, player, location, job, item, action, NPC, business, mission, or trade |
+| 404 | Unknown game, player, actor, location, job, item, action, NPC, business, mission, trade, schedule, or pack |
 | 409 | Game already exists |
+| 423 | World is paused for inspection (mutation blocked, reads pass) |
 | 429 | Plan limit reached |
 
 ## Games
@@ -40,15 +41,17 @@ Errors are JSON `{ "error": "message" }`:
 | POST | `.../players` | Create a player: `{ name, location?, startingCash? }` |
 | GET | `.../players` | List players |
 | GET | `.../players/:pid` | Player detail |
+| GET | `.../actors/:aid` | Any actor: player or NPC (for the inspector) |
 | POST | `.../players/:pid/actions` | Run any registered action: `{ action, ...inputs }`. `:pid` is a player id or an NPC id acting on its own; unknown ids return 404 |
 | GET | `...actions` | List registered actions |
+| GET | `.../systems` | List installed systems |
 | POST | `.../players/:pid/talk` | Talk to an NPC: `{ npcId }` |
 | POST | `.../players/:pid/buy` | `{ itemId, qty? }` |
 | POST | `.../players/:pid/use` | `{ itemId }` |
 | POST | `.../players/:pid/sell` | `{ itemId, qty? }` |
 | POST | `.../players/:pid/transfer` | `{ to, amount, reason? }` |
 | GET | `.../players/:pid/rank?metric=` | Rank on a leaderboard metric |
-| GET | `.../players/:pid/explain?fromDay=&toDay=` | Money by category over a window |
+| GET | `.../players/:pid/explain?fromDay=&toDay=` | Money by category over a window; lines shaped by earlier triggers carry `why` labels |
 
 Action ids for `/actions`: `enrol` (`target`: a course id), `work`, `travel` (`to`), `sleep` (`hours`), `eat` (`cost`, `energyGain`), `accept-job` (`jobId`), `quit-job`, `buy`, `use`, `sell`, `talk`, `transfer`, `trade-offer`, `trade-accept`, `trade-decline`, `trade-cancel`, `business-buy`, `business-collect`, `mission-accept`, `mission-claim`, `hire` (`target`: a business id, plus `id`, `wage`, `name?`, `role?`), `payroll` (`target`: a business id), `settle-obligation` (`scheduleId`). The camelCase forms `acceptJob` and `quitJob` are accepted as aliases.
 
@@ -109,6 +112,7 @@ Schedules settle automatically once per game day through `settle-obligation`. Mi
 | GET | `.../leaderboards?metric=wealth&limit=10` | `wealth`, `level`, `xp`, or `reputation` |
 | GET | `.../log?limit=100` | Recent event log |
 | GET | `.../replay?actorId=&fromDay=&toDay=` | Actions with their ledger entries and events |
+| GET | `.../graph?actorId=&fromDay=&toDay=` | Causal graph: action and event nodes with labelled edges |
 | GET | `.../stream?apiKey=` | Realtime events (SSE) |
 
 ## Simulation control
@@ -116,6 +120,8 @@ Schedules settle automatically once per game day through `settle-obligation`. Mi
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `.../advance` | Advance time: `{ days }` (1–30) |
+| POST | `.../pause` | Freeze mutation for inspection (reads still work) |
+| POST | `.../resume` | Unfreeze a paused world |
 | POST | `.../console/give-all` | `{ amount?, reason? }` |
 | POST | `.../console/set-price` | `{ key, multiplier }`, where `transport` affects travel and `goods` affects items |
 | POST | `.../console/trigger` | Fire an event: `{ eventId }` |

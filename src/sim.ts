@@ -14,18 +14,45 @@ import { buildLeaderboard, LEADERBOARD_METRICS, type LeaderboardEntry, type Lead
 import type { NpcDef } from "./npcs.js";
 import type { CreatePlayerOptions, JobDef, LocationDef, SimConfig } from "./types.js";
 import type { SimLogEvent } from "./events.js";
-import { ActionRefused, invalidInput, type ActionDef, type CauseRecord } from "./runtime/action.js";
-import { CORE_ACTIONS } from "./runtime/core-actions.js";
-import { ENTITY_ACTIONS } from "./runtime/entity-actions.js";
+import { ActionRefused, invalidInput, type ActionDef, type CauseLink, type CauseRecord } from "./runtime/action.js";
+import { BUILTIN_SYSTEMS, isSystem, type System } from "./systems.js";
+import type { Pack } from "./packs/worlds.js";
 import { EntityRegistry, type Entity, type EntityDef } from "./entities.js";
 import { ScheduleManager, type Schedule, type ScheduleDef } from "./schedules.js";
-import { SIM_ACTIONS } from "./runtime/sim-actions.js";
+import { createHash } from "node:crypto";
+import { SIMULATION_VERSION, canonicalize } from "./version.js";
 import type { Transaction } from "./wallet.js";
 
 /** A replayed action: its causal record plus the ledger entries and events it produced. */
 export interface CauseTrace extends CauseRecord {
   transactions: Transaction[];
   events: SimLogEvent[];
+}
+
+/** Who last changed a price modifier: the record modifier links point at. */
+export interface PriceSource {
+  day: number;
+  /** e.g. "EVENT:fuel-crisis", "console", "system weather". */
+  origin: string;
+  /** Log seq of the entry that best explains the change, when there is one. */
+  eventSeq?: number;
+}
+
+/** A node in the causal graph: a recorded action, or a log event it links to. */
+export interface GraphNode {
+  id: string;
+  kind: "cause" | "event";
+  actionId?: string;
+  type?: string;
+  day: number;
+  label: string;
+}
+
+export interface CausalEdge {
+  from: string;
+  to: string;
+  kind: string;
+  label: string;
 }
 
 export interface SimSnapshot {
@@ -54,8 +81,11 @@ export interface SimSnapshot {
   causeSeq?: number;
   entities?: Entity[];
   schedules?: Schedule[];
+  priceSources?: Record<string, PriceSource>;
   /** Runtime state of NPCs that have acted. Absent on old snapshots. */
   npcActors?: PlayerJSON[];
+  /** Paused flag. Absent (treated as running) on old snapshots. */
+  paused?: boolean;
 }
 
 export type SimEventHandler = (event: SimLogEvent) => void;
@@ -101,6 +131,27 @@ export class Sim {
   priceModifiers: Record<string, number> = {};
   /** Current versioned-world tag (see WorldCatalog). Defaults to "v1". */
   worldVersion = "v1";
+  /**
+   * Frozen world: mutating API calls are rejected with 423 while set.
+   * Reads, replay, and explain keep working — pause is for inspection.
+   */
+  paused = false;
+
+  /** Freeze all mutation; reads and inspection stay available. */
+  pause(): void {
+    if (!this.paused) {
+      this.paused = true;
+      this.emit("WORLD_PAUSED", { day: this.clock.day });
+    }
+  }
+
+  /** Unfreeze a paused world. */
+  resume(): void {
+    if (this.paused) {
+      this.paused = false;
+      this.emit("WORLD_RESUMED", { day: this.clock.day });
+    }
+  }
 
   private playersMap = new Map<string, Player>();
   private playerSeq = 0;
@@ -112,14 +163,27 @@ export class Sim {
   private lastRecordedDay = 1;
   /** Registered actions and their causal records (runtime pipeline). */
   private actions = new Map<string, ActionDef<unknown>>();
+  /** Installed behavior bundles, oldest first. */
+  private installedSystems = new Map<string, System>();
   private causes: CauseRecord[] = [];
   private causeSeq = 0;
   /** Cause id of the action currently executing, so ledger entries can be linked to it. */
   private activeCause: string | undefined;
+  /** Links collected by the running action; attached to its cause record. */
+  private pendingLinks: CauseLink[] = [];
+  /** Last recorded writer per price modifier, for modifier attribution. */
+  priceSources: Record<string, PriceSource> = {};
   /** Generic simulated things that are not players (courses, vehicles, ...). */
   entities = new EntityRegistry();
   /** Recurring obligations settled once per game day through the pipeline. */
   schedules = new ScheduleManager();
+  /**
+   * Freeze intraday clock movement (population-run harness mode). Action
+   * energy, money, and state effects still apply; only time stops, so days
+   * advance exclusively through advanceDays(). Default false: normal games
+   * are unaffected.
+   */
+  suspendTime = false;
 
   constructor(config: SimConfig, store?: Store) {
     this.gameId = config.gameId;
@@ -130,7 +194,7 @@ export class Sim {
     if (config.startingLocation) this.world.define(config.startingLocation);
     this.wirePlayerFactory(config);
     this.businesses = new BusinessManager(this.entities);
-    for (const action of [...CORE_ACTIONS, ...SIM_ACTIONS, ...ENTITY_ACTIONS]) this.defineAction(action);
+    for (const system of BUILTIN_SYSTEMS) this.use(system);
   }
 
   private defaultStartingCash = 0;
@@ -177,18 +241,18 @@ export class Sim {
   // ---- players ----
   players = {
     create: async (opts: CreatePlayerOptions): Promise<Player> => {
+      const startingCash = opts.startingCash ?? this.defaultStartingCash;
+      if (!(startingCash >= 0)) throw invalidInput("startingCash must be >= 0");
       this.playerSeq += 1;
       const id = `player_${this.playerSeq}`;
       const locationId = opts.location ?? this.defaultLocation;
       if (!this.world.has(locationId)) this.world.define(locationId);
-      const player = new Player(
-        id,
-        opts.name,
-        locationId,
-        opts.startingCash ?? this.defaultStartingCash,
-      );
+      const player = new Player(id, opts.name, locationId, 0);
       this.attachHooks(player);
       this.playersMap.set(id, player);
+      // Starting cash is funded as a genesis ledger entry, so money
+      // conservation (issued − destroyed = total balance) holds exactly.
+      if (startingCash > 0) player.wallet.credit(startingCash, player.stamp("genesis"));
       await this.store.savePlayer(player.toJSON());
       this.emit("PLAYER_CREATED", { name: opts.name }, id);
       return player;
@@ -227,6 +291,14 @@ export class Sim {
   private npcActors = new Map<string, Player>();
 
   /**
+   * Attach a causal link to the action currently executing. Runtime plumbing
+   * for actions; a no-op outside an execution.
+   */
+  addLink(link: CauseLink): void {
+    this.pendingLinks.push(link);
+  }
+
+  /**
    * Resolve any actor: an account-holding player first, otherwise the NPC's
    * runtime state (created lazily from its definition). Unknown ids throw
    * `Unknown actor` (HTTP 404). Player ids win on collision.
@@ -259,6 +331,10 @@ export class Sim {
       day: () => this.clock.day,
       time: () => this.clock.timeLabel,
       advanceMinutes: (m: number) => {
+        // Suspended in population runs: actions keep their energy and money
+        // effects, but intraday time does not move, so N agents acting in
+        // sequence don't advance N days per loop-day. Advance days explicitly.
+        if (this.suspendTime) return;
         const before = this.clock.day;
         this.clock.advanceMinutes(m);
         // Tick daily events for each day boundary crossed.
@@ -318,19 +394,22 @@ export class Sim {
       .filter((reason): reason is string => reason != null);
     if (failures.length > 0) {
       this.emit("ACTION_REFUSED", { actionId, reasons: failures, causeId }, actorId);
-      this.causes.push({ ...base, outcome: "refused", reasons: failures, seqFrom, seqTo: this.seq });
+      this.causes.push({ ...base, outcome: "refused", reasons: failures, seqFrom, seqTo: this.seq, links: [] });
       throw new ActionRefused(actionId, failures);
     }
 
     const previous = this.activeCause;
+    const outerLinks = this.pendingLinks;
     this.activeCause = causeId;
+    this.pendingLinks = [];
     try {
       const result = def.execute({ sim: this, actor, inputs, target, causeId });
       this.emit("ACTION_EXECUTED", { actionId, causeId }, actorId);
-      this.causes.push({ ...base, outcome: "ok", reasons: [], seqFrom, seqTo: this.seq });
+      this.causes.push({ ...base, outcome: "ok", reasons: [], seqFrom, seqTo: this.seq, links: this.pendingLinks });
       return result as R;
     } finally {
       this.activeCause = previous;
+      this.pendingLinks = outerLinks;
     }
   }
 
@@ -345,7 +424,7 @@ export class Sim {
    */
   replay(opts: { actorId?: string; fromDay?: number; toDay?: number } = {}): CauseTrace[] {
     const { actorId, fromDay = 1, toDay = Number.MAX_SAFE_INTEGER } = opts;
-    const ledger = [...this.playersMap.values()].flatMap((p) => p.wallet.history);
+    const ledger = [...this.playersMap.values(), ...this.npcActors.values()].flatMap((p) => p.wallet.history);
     return this.causes
       .filter((c) => (!actorId || c.actorId === actorId) && c.day >= fromDay && c.day <= toDay)
       .map((c) => ({
@@ -353,6 +432,49 @@ export class Sim {
         transactions: ledger.filter((t) => t.meta?.causeId === c.id),
         events: this.log.filter((e) => e.seq > c.seqFrom && e.seq <= c.seqTo),
       }));
+  }
+
+  /**
+   * The causal graph for a window: recorded actions plus the log events their
+   * links point at, with edges between them. Event nodes are id'd
+   * `event:<seq>` for log lookup.
+   */
+  replayGraph(opts: { actorId?: string; fromDay?: number; toDay?: number } = {}): {
+    nodes: GraphNode[];
+    edges: CausalEdge[];
+  } {
+    const traces = this.replay(opts);
+    const nodes: GraphNode[] = traces.map((t) => ({
+      id: t.id,
+      kind: "cause" as const,
+      actionId: t.actionId,
+      day: t.day,
+      label: `${t.actionId} (${t.outcome})`,
+    }));
+    const seenEvents = new Set<number>();
+    const edges: CausalEdge[] = [];
+    for (const t of traces) {
+      for (const link of t.links ?? []) {
+        if (link.causeId) {
+          edges.push({ from: link.causeId, to: t.id, kind: link.kind, label: link.label });
+        } else if (link.eventSeq != null) {
+          const eventId = `event:${link.eventSeq}`;
+          if (!seenEvents.has(link.eventSeq)) {
+            seenEvents.add(link.eventSeq);
+            const entry = this.log.find((e) => e.seq === link.eventSeq);
+            nodes.push({
+              id: eventId,
+              kind: "event" as const,
+              type: entry?.type,
+              day: entry?.day ?? t.day,
+              label: entry?.type ?? eventId,
+            });
+          }
+          edges.push({ from: eventId, to: t.id, kind: link.kind, label: link.label });
+        }
+      }
+    }
+    return { nodes, edges };
   }
 
   /**
@@ -365,7 +487,7 @@ export class Sim {
     toDay: number | null;
     balance: number;
     net: number;
-    lines: { category: string; credits: number; debits: number; net: number }[];
+    lines: { category: string; credits: number; debits: number; net: number; why?: string[] }[];
   } {
     const player = this.actorOf(playerId);
     const fromDay = opts.fromDay ?? 1;
@@ -381,11 +503,84 @@ export class Sim {
       else row.debits += t.amount;
       byCategory.set(category, row);
     }
+    // Modifier links from this actor's causes in the window, grouped by category.
+    const whys = new Map<string, string[]>();
+    for (const c of this.causes) {
+      if (c.actorId !== playerId || c.day < fromDay || (toDay != null && c.day > toDay)) continue;
+      for (const link of c.links ?? []) {
+        if (link.kind !== "modifier" || !link.category) continue;
+        const list = whys.get(link.category) ?? [];
+        if (!list.includes(link.label)) list.push(link.label);
+        whys.set(link.category, list);
+      }
+    }
     const lines = [...byCategory.entries()]
-      .map(([category, r]) => ({ category, ...r, net: r.credits - r.debits }))
+      .map(([category, r]) => ({
+        category,
+        ...r,
+        net: r.credits - r.debits,
+        ...(whys.has(category) ? { why: whys.get(category) as string[] } : {}),
+      }))
       .sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
     const net = lines.reduce((s, l) => s + l.net, 0);
     return { playerId, fromDay, toDay, balance: player.wallet.balance, net, lines };
+  }
+
+  /**
+   * Golden fingerprint: sha256 over the canonical snapshot. Same code version,
+   * seed, and action sequence always produce the same hash. The fingerprint
+   * test pins reference worlds to theirs; a changed hash means simulation
+   * behavior moved and must be explained with a SIMULATION_VERSION bump.
+   */
+  fingerprint(): string {
+    return createHash("sha256").update(canonicalize(this.snapshot())).digest("hex");
+  }
+
+  /** The simulation version this build produces fingerprints for. */
+  get simulationVersion(): number {
+    return SIMULATION_VERSION;
+  }
+
+  /**
+   * Structural invariants over live state. Worlds created with genesis
+   * accounting satisfy money conservation exactly; older saves predate it.
+   */
+  checkInvariants(): { id: string; ok: boolean; detail?: string }[] {
+    const wallets = [...this.playersMap.values(), ...this.npcActors.values()].map((p) => p.wallet);
+    const issued = wallets.flatMap((w) => w.history).filter((t) => t.type === "credit").reduce((s, t) => s + t.amount, 0);
+    const destroyed = wallets.flatMap((w) => w.history).filter((t) => t.type === "debit").reduce((s, t) => s + t.amount, 0);
+    const balances = wallets.reduce((s, w) => s + w.balance, 0);
+    const results: { id: string; ok: boolean; detail?: string }[] = [
+      {
+        id: "money-conservation",
+        ok: balances === issued - destroyed,
+        detail: `balances=${balances} issued=${issued} destroyed=${destroyed}`,
+      },
+      {
+        id: "no-negative-balances",
+        ok: wallets.every((w) => w.balance >= 0),
+        detail: `min=${wallets.length ? Math.min(...wallets.map((w) => w.balance)) : 0}`,
+      },
+    ];
+    const bad = wallets
+      .flatMap((w) => w.history)
+      .find(
+        (t) =>
+          (t.type !== "credit" && t.type !== "debit") ||
+          typeof t.amount !== "number" ||
+          !Number.isFinite(t.amount) ||
+          t.amount < 0 ||
+          typeof t.reason !== "string" ||
+          t.reason === "" ||
+          !Number.isInteger(t.day) ||
+          t.day < 1,
+      );
+    results.push({
+      id: "ledger-complete",
+      ok: !bad,
+      detail: bad ? `first bad entry: ${JSON.stringify(bad)}` : "all entries shaped",
+    });
+    return results;
   }
 
   // ---- simulation stepping ----
@@ -401,9 +596,77 @@ export class Sim {
     };
   }
 
-  private tickDay(day: number): void {
-    this.events.tick(this.eventCtx());
+  /** Process one game day: events, then settlements, then system hooks. Returns fired event ids. */
+  private tickDay(day: number): string[] {
+    const beforeEvents = { ...this.priceModifiers };
+    const seqBefore = this.seq;
+    const fired = this.events.tick(this.eventCtx());
+    this.notePriceChanges({ modifiers: beforeEvents, seq: seqBefore }, this.describeEventSources(fired, seqBefore));
     this.settleSchedules(day);
+    // System hooks run last, observing the day's settled state. A throwing
+    // hook is logged and skipped: one bad system must not stall the world.
+    for (const s of this.installedSystems.values()) {
+      if (!s.onTick) continue;
+      const before = { ...this.priceModifiers };
+      try {
+        s.onTick({ sim: this, day });
+      } catch (err) {
+        this.emit(
+          "SYSTEM_TICK_FAILED",
+          { systemId: s.id, error: err instanceof Error ? err.message : String(err) },
+        );
+      }
+      this.notePriceChanges({ modifiers: before, seq: this.seq }, {
+        origin: `system ${s.id}`,
+        emitEvent: true,
+      });
+    }
+    return fired;
+  }
+
+  /**
+   * Attribute modifier changes since `before` to a source. Returns true when
+   * anything changed. With `emitEvent`, the change is also logged so the
+   * source has a log entry to point at.
+   */
+  private notePriceChanges(
+    before: { modifiers: Record<string, number>; seq: number },
+    source: { origin: string; eventSeq?: number; emitEvent?: boolean },
+  ): boolean {
+    let changed = false;
+    const keys = new Set([...Object.keys(before.modifiers), ...Object.keys(this.priceModifiers)]);
+    for (const key of keys) {
+      if (before.modifiers[key] !== this.priceModifiers[key]) {
+        changed = true;
+        let eventSeq = source.eventSeq;
+        if (source.emitEvent) {
+          eventSeq = this.emit("PRICE_UPDATED", { key, value: this.priceModifiers[key], origin: source.origin }).seq;
+        }
+        this.priceSources[key] = { day: this.clock.day, origin: source.origin, eventSeq };
+      }
+    }
+    return changed;
+  }
+
+  /** Source description for modifiers changed by a tick's fired events. */
+  private describeEventSources(
+    fired: string[],
+    seqBefore: number,
+  ): { origin: string; eventSeq?: number; emitEvent?: boolean } {
+    if (fired.length === 1) {
+      const entry = this.log.find((e) => e.seq > seqBefore && e.type === `EVENT:${fired[0]}`);
+      return { origin: `EVENT:${fired[0]}`, eventSeq: entry?.seq };
+    }
+    return { origin: `events fired: ${fired.join(", ") || "none"}` };
+  }
+
+  /** Human label for a modifier link, e.g. "transport ×1.25 (EVENT:fuel-crisis, day 4)". */
+  modifierLabel(key: string): string {
+    const mult = this.priceModifiers[key] ?? 1;
+    const shown = `×${Math.round(mult * 100) / 100}`;
+    const src = this.priceSources[key];
+    if (!src) return `${key} ${shown} (source unknown)`;
+    return `${key} ${shown} (${src.origin}, day ${src.day})`;
   }
 
   /**
@@ -459,8 +722,7 @@ export class Sim {
     const fired: string[] = [];
     for (let i = 0; i < days; i++) {
       this.clock.advanceDays(1);
-      fired.push(...this.events.tick(this.eventCtx()));
-      this.settleSchedules(this.clock.day);
+      fired.push(...this.tickDay(this.clock.day));
     }
     this.maybeRecordDays();
     return fired;
@@ -644,7 +906,12 @@ export class Sim {
     },
     setPrice: (key: string, multiplier: number): void => {
       this.priceModifiers[key] = multiplier;
-      this.emit("CONSOLE_SET_PRICE", { key, multiplier });
+      const event = this.emit("CONSOLE_SET_PRICE", { key, multiplier });
+      this.priceSources[key] = {
+        day: this.clock.day,
+        origin: "console",
+        eventSeq: event.seq,
+      };
     },
     trigger: (id: string): void => this.triggerEvent(id),
     resetEconomy: (): void => {
@@ -653,20 +920,27 @@ export class Sim {
     },
   };
 
-  // ---- marketplace packs (see packs/) ----
+  // ---- marketplace packs and composable systems ----
   /**
-   * Install a marketplace pack (world, jobs, or system) into this Sim.
-   * Packs only add/upsert definitions — they never touch players.
+   * Install a marketplace pack (world data) or a composable system
+   * (actions, schedules, per-day hooks, reports) into this Sim.
+   * Neither touches players.
    */
-  use(pack: {
-    locations?: (string | LocationDef)[];
-    jobs?: JobDef[];
-    events?: EventDefinition[];
-    npcs?: NpcDef[];
-    items?: ItemDef[];
-    businesses?: BusinessDef[];
-    missions?: MissionDef[];
-  }): void {
+  use(def: Pack | System): void {
+    if (isSystem(def)) {
+      this.installSystem(def);
+      return;
+    }
+    const pack = def as Pack;
+    const hasData =
+      pack.locations !== undefined ||
+      pack.jobs !== undefined ||
+      pack.events !== undefined ||
+      pack.npcs !== undefined ||
+      pack.items !== undefined ||
+      pack.businesses !== undefined ||
+      pack.missions !== undefined;
+    if (!pack.id || !hasData) throw invalidInput("use() needs a pack or a system");
     for (const loc of pack.locations ?? []) this.world.define(loc);
     for (const job of pack.jobs ?? []) this.jobs.define(job);
     for (const ev of pack.events ?? []) {
@@ -680,7 +954,31 @@ export class Sim {
     for (const item of pack.items ?? []) this.items.define(item);
     for (const biz of pack.businesses ?? []) this.businesses.define(biz);
     for (const mission of pack.missions ?? []) this.missions.define(mission);
-    this.emit("PACK_INSTALLED", {});
+    this.emit("PACK_INSTALLED", { packId: pack.id });
+  }
+
+  /** Install a behavior bundle. Built-ins load through this same method. */
+  installSystem(system: System): void {
+    if (!system.id || typeof system.id !== "string") throw invalidInput("System must have an id");
+    if (this.installedSystems.has(system.id)) throw invalidInput(`System already installed: ${system.id}`);
+    for (const action of system.actions ?? []) this.defineAction(action);
+    for (const schedule of system.schedules ?? []) this.schedules.define(schedule, this.clock.day);
+    this.installedSystems.set(system.id, system);
+    this.emit("SYSTEM_INSTALLED", { systemId: system.id });
+  }
+
+  /** Installed systems, oldest first. */
+  systems(): { id: string; description?: string }[] {
+    return [...this.installedSystems.values()].map((s) => ({ id: s.id, description: s.description }));
+  }
+
+  /** One report per installed system that provides one. Report errors propagate to the caller. */
+  systemReport(): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const s of this.installedSystems.values()) {
+      if (s.report) out[s.id] = s.report({ sim: this, day: this.clock.day });
+    }
+    return out;
   }
 
   // ---- social, multiplayer, businesses, missions ----
@@ -822,11 +1120,15 @@ export class Sim {
       priceModifiers: { ...this.priceModifiers },
       playerSeq: this.playerSeq,
       worldVersion: this.worldVersion,
+      paused: this.paused,
       history: [...this.history],
       lastRecordedDay: this.lastRecordedDay,
       causes: [...this.causes],
       entities: this.entities.toJSON(),
       schedules: this.schedules.toJSON(),
+      priceSources: Object.fromEntries(
+        Object.entries(this.priceSources).map(([k, v]) => [k, { ...v }]),
+      ),
       causeSeq: this.causeSeq,
     };
   }
@@ -852,10 +1154,14 @@ export class Sim {
     sim.missions = MissionManager.fromJSON(snapshot.missions ?? []);
     sim.trades = TradeLedger.fromJSON(snapshot.trades ?? []);
     sim.priceModifiers = { ...snapshot.priceModifiers };
+    sim.priceSources = Object.fromEntries(
+      Object.entries(snapshot.priceSources ?? {}).map(([k, v]) => [k, { ...v }]),
+    );
     sim.log = [...snapshot.log];
     sim.seq = snapshot.log.length;
     sim.playerSeq = snapshot.playerSeq;
     sim.worldVersion = snapshot.worldVersion ?? "v1";
+    sim.paused = snapshot.paused ?? false;
     sim.causes = [...(snapshot.causes ?? [])];
     sim.causeSeq = snapshot.causeSeq ?? sim.causes.length;
     sim.history = [...(snapshot.history ?? [])];

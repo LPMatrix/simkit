@@ -1,6 +1,6 @@
 {
   "name": "simkit",
-  "version": "0.10.0",
+  "version": "0.15.0",
   "description": "Build the rules. SimKit runs the world. A TypeScript simulation runtime and domain SDK for systemic worlds.",
   "type": "module",
   "main": "./dist/index.js",
@@ -21,7 +21,8 @@
     "server": "tsx server/main.ts",
     "typecheck": "tsc --noEmit && tsx --eval \"import('typescript').then(async () => {})\"",
     "typecheck:all": "npx tsc --noEmit -p tsconfig.all.json",
-    "spike": "tsx experiments/run.ts"
+    "spike": "tsx experiments/run.ts",
+    "simulate": "tsx src/cli.ts simulate"
   },
   "keywords": [
     "simulation",
@@ -43,5 +44,8 @@
   },
   "dependencies": {
     "js-yaml": "^5.4.3"
+  },
+  "bin": {
+    "simkit": "./dist/cli.js"
   }
 }

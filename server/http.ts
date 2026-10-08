@@ -172,6 +172,7 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
         gameId: sim.gameId,
         currency: sim.currency,
         worldVersion: sim.worldVersion,
+        paused: sim.paused,
         versions: registry.catalog.list(p.gameId),
         plan: registry.meter.plan(p.gameId),
         clock: { day: sim.clock.day, weekday: sim.clock.weekday, time: sim.clock.timeLabel },
@@ -290,6 +291,10 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
       send(res, 200, registry.get(p.gameId).players.get(p.playerId).toJSON());
     }),
 
+    route("GET", "/v1/games/:gameId/actors/:actorId", (_req, res, p) => {
+      send(res, 200, registry.get(p.gameId).actorOf(p.actorId).toJSON());
+    }),
+
     // Generic action endpoint: { action, ...params }
     route("POST", "/v1/games/:gameId/players/:playerId/actions", async (_req, res, p, _url, body) => {
       const sim = registry.get(p.gameId);
@@ -344,6 +349,10 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
       send(res, 200, { actions: registry.get(p.gameId).listActions() });
     }),
 
+    route("GET", "/v1/games/:gameId/systems", (_req, res, p) => {
+      send(res, 200, { systems: registry.get(p.gameId).systems() });
+    }),
+
     route("GET", "/v1/games/:gameId/replay", (_req, res, p, url) => {
       const sim = registry.get(p.gameId);
       const num = (k: string): number | undefined => {
@@ -361,6 +370,16 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
         return v == null || v === "" ? undefined : Number(v);
       };
       send(res, 200, sim.explain(p.playerId, { fromDay: num("fromDay"), toDay: num("toDay") }));
+    }),
+
+    route("GET", "/v1/games/:gameId/graph", (_req, res, p, url) => {
+      const sim = registry.get(p.gameId);
+      const num = (k: string): number | undefined => {
+        const v = url.searchParams.get(k);
+        return v == null || v === "" ? undefined : Number(v);
+      };
+      const actorId = url.searchParams.get("actorId") ?? undefined;
+      send(res, 200, sim.replayGraph({ actorId, fromDay: num("fromDay"), toDay: num("toDay") }));
     }),
 
     route("GET", "/v1/games/:gameId/log", (_req, res, p, url) => {
@@ -600,6 +619,20 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
       send(res, 200, { ok: true });
     }),
 
+    route("POST", "/v1/games/:gameId/pause", async (_req, res, p) => {
+      const sim = registry.get(p.gameId);
+      sim.pause();
+      registry.schedulePersist(p.gameId);
+      send(res, 200, { paused: true });
+    }),
+
+    route("POST", "/v1/games/:gameId/resume", async (_req, res, p) => {
+      const sim = registry.get(p.gameId);
+      sim.resume();
+      registry.schedulePersist(p.gameId);
+      send(res, 200, { paused: false });
+    }),
+
     route("GET", "/v1/games/:gameId/snapshot", (_req, res, p) => {
       send(res, 200, registry.get(p.gameId).snapshot());
     }),
@@ -689,6 +722,21 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
           params[k] = decodeURIComponent(m[i + 1]);
         });
         if (params.gameId) registry.meter.recordApi(params.gameId);
+        // Paused worlds reject mutation with 423; reads, pause, and resume pass through.
+        if (
+          params.gameId &&
+          req.method !== "GET" &&
+          !pathname.endsWith("/pause") &&
+          !pathname.endsWith("/resume")
+        ) {
+          try {
+            if (registry.get(params.gameId).paused) {
+              return send(res, 423, { error: "World is paused for inspection. Resume to mutate." });
+            }
+          } catch {
+            // Unknown game: fall through to normal routing (404).
+          }
+        }
         await r.handler(req, res, params, url, body);
         return;
       }

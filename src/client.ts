@@ -186,6 +186,10 @@ export class SimClient {
     return this.req(`/v1/games/${this.gameId}/schedules`);
   }
 
+  async listSystems(): Promise<{ systems: { id: string; description?: string }[] }> {
+    return this.req(`/v1/games/${this.gameId}/systems`);
+  }
+
   async defineSchedule(def: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.req(`/v1/games/${this.gameId}/schedules`, {
       method: "POST",
@@ -234,11 +238,35 @@ export class SimClient {
     return this.req(`/v1/games/${this.gameId}/players/${playerId}/rank?metric=${metric}`);
   }
 
+  replayGraph(opts: { actorId?: string; fromDay?: number; toDay?: number } = {}): Promise<{
+    nodes: { id: string; kind: string; actionId?: string; type?: string; day: number; label: string }[];
+    edges: { from: string; to: string; kind: string; label: string }[];
+  }> {
+    const q = new URLSearchParams();
+    if (opts.actorId) q.set("actorId", opts.actorId);
+    if (opts.fromDay != null) q.set("fromDay", String(opts.fromDay));
+    if (opts.toDay != null) q.set("toDay", String(opts.toDay));
+    const query = q.size > 0 ? `?${q}` : "";
+    return this.req(`/v1/games/${this.gameId}/graph${query}`);
+  }
+
   advance(days = 1): Promise<{ day: number; fired: string[] }> {
     return this.req(`/v1/games/${this.gameId}/advance`, {
       method: "POST",
       body: JSON.stringify({ days }),
     });
+  }
+
+  pause(): Promise<{ paused: boolean }> {
+    return this.req(`/v1/games/${this.gameId}/pause`, { method: "POST" });
+  }
+
+  resume(): Promise<{ paused: boolean }> {
+    return this.req(`/v1/games/${this.gameId}/resume`, { method: "POST" });
+  }
+
+  actor(id: string): Promise<RemotePlayer> {
+    return this.req(`/v1/games/${this.gameId}/actors/${id}`);
   }
 
   log(limit = 100): Promise<{ log: { type: string; day: number; time: string; playerId?: string }[] }> {

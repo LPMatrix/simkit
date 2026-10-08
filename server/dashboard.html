@@ -37,6 +37,8 @@
   <select id="game"></select>
   <input id="apiKey" placeholder="x-api-key (simkit-dev)" size="22" />
   <span class="pill" id="clock">—</span>
+  <span class="pill" id="paused" style="display:none">paused</span>
+  <button id="pauseBtn" class="ghost">Pause</button>
 </header>
 <main>
   <div class="row" id="stats"></div>
@@ -97,13 +99,25 @@
   </div>
 
   <div class="card">
+    <h2>Inspector — find an actor, see why money moved, browse causes</h2>
+    <div class="toolbar" style="margin-bottom:8px">
+      <input id="inspectId" placeholder="player or NPC id (click a name below)" size="34" />
+      <button data-act="inspect">Inspect</button>
+    </div>
+    <div class="mut" id="inspectDetail">No actor selected.</div>
+    <div class="mut" id="inspectExplain" style="margin-top:8px"></div>
+    <div class="mut" id="inspectReplay" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card">
     <h2>Event log (realtime via SSE)</h2>
     <div id="log"></div>
   </div>
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { game: "lagos-life" };
+const state = { game: "lagos-life", inspectId: null };
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const base = () => "";
 const key = () => $("apiKey").value || localStorage.getItem("simkit-key") || "simkit-dev";
 $("apiKey").value = localStorage.getItem("simkit-key") || "simkit-dev";
@@ -143,6 +157,13 @@ async function refresh() {
     api(`/v1/games/${g}/economy`),
   ]);
   $("clock").textContent = `Day ${info.clock.day} ${info.clock.weekday} ${info.clock.time}`;
+  $("paused").style.display = info.paused ? "" : "none";
+  $("pauseBtn").textContent = info.paused ? "Resume" : "Pause";
+  for (const b of document.querySelectorAll("button[data-act],button[data-do]")) {
+    if (b.dataset.act === "inspect") continue;
+    b.disabled = !!info.paused;
+  }
+  if (state.inspectId) await refreshInspector().catch(() => {});
   $("stats").innerHTML = [
     ["Players", info.stats.totalPlayers],
     ["Total ₦", Number(info.stats.totalCurrency).toLocaleString()],
@@ -151,7 +172,7 @@ async function refresh() {
   ].map(([k, v]) => `<div class="card"><h2>${k}</h2><div class="big">${v}</div></div>`).join("")
     + `<div class="card"><h2>Events</h2><div class="mut">${Object.entries(info.stats.eventCounts).map(([k, v]) => `${k}: ${v}`).join("<br>") || "none yet"}</div></div>`;
   $("players").innerHTML = players.players.map(p =>
-    `<tr><td>${p.name}</td><td>${p.wallet.balance.toLocaleString()}</td><td>${p.locationId}</td><td>${p.jobId || "—"}</td>
+    `<tr><td><button class="ghost" data-inspect="${p.id}">${esc(p.name)}</button></td><td>${p.wallet.balance.toLocaleString()}</td><td>${p.locationId}</td><td>${p.jobId || "—"}</td>
      <td><button class="ghost" data-p="${p.id}" data-do="work">work</button>
      <button class="ghost" data-p="${p.id}" data-do="sleep">sleep</button></td></tr>`).join("");
   $("world").innerHTML =
@@ -171,6 +192,50 @@ async function refresh() {
     `Wealth: ${analytics.wealthBuckets.map(b => `${b.label} ${b.count}`).join(" · ")}`;
   spark($("spark"), analytics.series.map(s => s.avgWealth));
 }
+
+async function refreshInspector() {
+  const g = state.game, id = state.inspectId;
+  if (!id) return;
+  const [actor, explain, replay, graph] = await Promise.all([
+    api(`/v1/games/${g}/actors/${encodeURIComponent(id)}`),
+    api(`/v1/games/${g}/players/${encodeURIComponent(id)}/explain`),
+    api(`/v1/games/${g}/replay?actorId=${encodeURIComponent(id)}`),
+    api(`/v1/games/${g}/graph?actorId=${encodeURIComponent(id)}`),
+  ]);
+  const inv = Object.entries(actor.inventory?.items ?? {}).map(([k, v]) => `${esc(k)}×${v}`).join(", ") || "empty";
+  const rel = Object.entries(actor.relationships ?? {}).map(([k, v]) => `${esc(k)} ${v}`).join(", ") || "—";
+  const stats = Object.entries(actor.progression?.stats ?? {}).map(([k, v]) => `${esc(k)} ${v}`).join(", ") || "—";
+  $("inspectDetail").innerHTML =
+    `<b>${esc(actor.name)}</b> <span class="pill">${esc(actor.id)}</span><br>` +
+    `₦${actor.wallet.balance.toLocaleString()} · ${esc(actor.locationId)} · job ${esc(actor.jobId || "none")} · ` +
+    `energy ${actor.energy}% · health ${actor.health}% · level ${actor.progression?.level ?? 1} · XP ${actor.progression?.xp ?? 0}<br>` +
+    `Bag: ${inv}<br>Relationships: ${rel}<br>Skills: ${stats}`;
+  $("inspectExplain").innerHTML =
+    `<b>Why the money moved (net ₦${explain.net.toLocaleString()})</b><br>` +
+    (explain.lines.map(l =>
+      `${esc(l.category)}: ${l.net >= 0 ? "+" : ""}₦${l.net.toLocaleString()}` +
+      (l.why ? ` — <i>${l.why.map(esc).join("; ")}</i>` : "")
+    ).join("<br>") || "no transactions yet");
+  const edgesByTo = new Map();
+  for (const e of graph.edges) {
+    if (!edgesByTo.has(e.to)) edgesByTo.set(e.to, []);
+    edgesByTo.get(e.to).push(e);
+  }
+  $("inspectReplay").innerHTML =
+    `<b>Recent actions (${replay.trace.length})</b><br>` +
+    (replay.trace.slice(-12).reverse().map(t => {
+      const txs = t.transactions.map(x => `${x.type === "credit" ? "+" : "−"}₦${x.amount} ${esc(x.reason || "")}`).join(", ");
+      const edgeLines = (edgesByTo.get(t.id) ?? []).map(e => `<br>&nbsp;&nbsp;↳ ${esc(e.label)}`).join("");
+      return `day${t.day} ${esc(t.actionId)} <span class="pill">${esc(t.outcome)}</span>${txs ? " " + txs : ""}${edgeLines}`;
+    }).join("<br>") || "no actions yet");
+}
+
+$("pauseBtn").addEventListener("click", async () => {
+  const g = state.game;
+  const info = await api(`/v1/games/${g}`);
+  await api(`/v1/games/${g}/${info.paused ? "resume" : "pause"}`, { method: "POST" });
+  await refresh();
+});
 
 function spark(canvas, values) {
   const ctx = canvas.getContext("2d");
@@ -195,14 +260,27 @@ function connectStream() {
   es.onmessage = () => refresh().catch(() => {});
 }
 
-$("game").addEventListener("change", () => { state.game = $("game").value; connectStream(); refresh().catch(alert); });
+$("game").addEventListener("change", () => { state.game = $("game").value; state.inspectId = null; $("inspectId").value = ""; $("inspectDetail").textContent = "No actor selected."; $("inspectExplain").textContent = ""; $("inspectReplay").textContent = ""; connectStream(); refresh().catch(alert); });
 $("boardMetric").addEventListener("change", () => refresh().catch(() => {}));
 
 document.addEventListener("click", async (e) => {
+  const insp = e.target.closest("button[data-inspect]");
+  if (insp) {
+    $("inspectId").value = insp.dataset.inspect;
+    state.inspectId = insp.dataset.inspect;
+    await refreshInspector().catch((err) => alert(err.message));
+    return;
+  }
   const b = e.target.closest("button");
   if (!b) return;
   const g = state.game;
   try {
+    if (b.dataset.act === "inspect") {
+      state.inspectId = $("inspectId").value.trim() || null;
+      if (!state.inspectId) { $("inspectDetail").textContent = "No actor selected."; $("inspectExplain").textContent = ""; $("inspectReplay").textContent = ""; return; }
+      await refreshInspector();
+      return;
+    }
     if (b.dataset.act === "advance") await api(`/v1/games/${g}/advance`, { method: "POST", body: JSON.stringify({ days: Number(b.dataset.days) }) });
     if (b.dataset.act === "give") await api(`/v1/games/${g}/console/give-all`, { method: "POST", body: JSON.stringify({ amount: 10000 }) });
     if (b.dataset.act === "reset") await api(`/v1/games/${g}/console/reset-economy`, { method: "POST" });

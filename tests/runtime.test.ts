@@ -130,10 +130,10 @@ describe("explain", () => {
 
     const e = sim.explain(p.id);
     expect(e.balance).toBe(50000 + 5000 - 1500 - 500);
-    expect(e.net).toBe(3000);
+    expect(e.net).toBe(50000 + 3000); // genesis funding plus activity
     const byCat = Object.fromEntries(e.lines.map((l) => [l.category, l.net]));
-    expect(byCat).toEqual({ salary: 5000, food: -1500, travel: -500 });
-    expect(e.lines[0].category).toBe("salary"); // largest movement first
+    expect(byCat).toEqual({ genesis: 50000, salary: 5000, food: -1500, travel: -500 });
+    expect(e.lines[0].category).toBe("genesis"); // largest movement first
   });
 
   it("respects the day window", async () => {
@@ -143,10 +143,10 @@ describe("explain", () => {
     p.work(); // credited on day 1
     sim.advanceDays(1);
     p.work(); // credited on day 3 (advanceDays keeps time-of-day, work adds 8h)
-    expect(sim.explain(p.id, { toDay: 1 }).net).toBe(5000);
+    expect(sim.explain(p.id, { toDay: 1 }).net).toBe(55000); // genesis + first paycheck
     expect(sim.explain(p.id, { fromDay: 3 }).net).toBe(5000);
     expect(sim.explain(p.id, { fromDay: 2, toDay: 2 }).net).toBe(0);
-    expect(sim.explain(p.id).net).toBe(10000);
+    expect(sim.explain(p.id).net).toBe(60000);
   });
 });
 

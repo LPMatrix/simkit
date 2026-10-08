@@ -338,4 +338,32 @@ describe("API server", () => {
     await client.advance(2);
     expect((await client.getPlayer(p.id)).wallet.balance).toBe(start - 1000); // no further charges
   });
+
+  it("serves causal traces, graphs, and explanations with links", async () => {
+    const headers = { "x-api-key": apiKey, "content-type": "application/json" };
+    const client = new SimClient({ baseUrl, apiKey, gameId: "test-lagos" });
+    const p = await client.createPlayer({ name: "Linked", location: "home" });
+    await fetch(`${baseUrl}/v1/games/test-lagos/console/set-price`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ key: "transport", multiplier: 2 }),
+    });
+    await client.travel(p.id, "yaba");
+
+    const replay = await (
+      await fetch(`${baseUrl}/v1/games/test-lagos/replay?actorId=${p.id}`, { headers })
+    ).json();
+    const travel = replay.trace.find((t: { actionId: string }) => t.actionId === "travel");
+    expect(travel.links[0].label).toContain("console");
+
+    const graph = await client.replayGraph({ actorId: p.id });
+    expect(graph.edges.some((e) => e.kind === "modifier")).toBe(true);
+
+    const explain = await (
+      await fetch(`${baseUrl}/v1/games/test-lagos/players/${p.id}/explain`, { headers })
+    ).json();
+    expect(explain.lines.find((l: { category: string }) => l.category === "travel").why[0]).toContain(
+      "console",
+    );
+  });
 });

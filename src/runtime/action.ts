@@ -48,6 +48,20 @@ export interface ActionDef<R = unknown> {
   execute(ctx: ActionContext): R;
 }
 
+/** A cross-action causal link on a cause record. */
+export interface CauseLink {
+  /** "modifier" for price effects, "trade" for offer→accept. */
+  kind: "modifier" | "trade";
+  /** Human sentence, e.g. "transport ×1.25 (EVENT:fuel-crisis, day 4)". */
+  label: string;
+  /** Ledger category this affected, if any (lets explain() attach it). */
+  category?: string;
+  /** Id of the earlier cause, when the trigger was an action. */
+  causeId?: string;
+  /** Log seq of the earlier event, when the trigger was an event. */
+  eventSeq?: number;
+}
+
 /** One attempted action, successful or refused. Kept for replay and explanation. */
 export interface CauseRecord {
   id: string;
@@ -61,6 +75,8 @@ export interface CauseRecord {
   /** Log sequence range (exclusive start, inclusive end) covering this action's events. */
   seqFrom: number;
   seqTo: number;
+  /** Links to earlier causes or events that shaped this action. */
+  links: CauseLink[];
 }
 
 /** Thrown when one or more requirements fail. Maps to HTTP 400. */
