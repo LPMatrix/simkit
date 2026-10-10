@@ -155,9 +155,9 @@ SimKit ships these as building blocks. They are generic, not tied to one setting
 | System        | What it provides                                                                      |
 | ------------- | ------------------------------------------------------------------------------------- |
 | Economy       | Wallets with auditable transactions, market modifiers, issuance and destruction stats |
-| Jobs          | Hiring, work shifts, pay on a schedule, skill requirements, energy costs              |
+| Jobs          | Hiring, work shifts, pay on a schedule, skill requirements, energy costs, optional dismissal for absence |
 | Locations     | Location graph with travel cost and time, visit tracking                              |
-| Needs         | Energy and health, restored by sleep, food, and items                                 |
+| Needs         | Energy and health as built-in needs plus configurable custom needs (thirst, morale, …) with daily decay, threshold events, item restoration, and action gating — all costs resolve through one registry |
 | Relationships | NPCs with locations, dialogue drawn from the seeded RNG, relationship levels          |
 | Businesses    | Ownership, daily income, collection, hiring employees, payroll                        |
 | Assets        | Items with prices, effects, buying, selling, and trading                              |

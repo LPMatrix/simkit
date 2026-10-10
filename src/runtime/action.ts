@@ -110,8 +110,10 @@ export const requirements = {
   hasEnergy(min: number, message?: string): Requirement {
     return {
       id: `hasEnergy:${min}`,
-      check: ({ actor }) =>
-        actor.energy >= min ? null : (message ?? `Not enough energy (need ${min}). Sleep or eat first.`),
+      check: (ctx) => {
+        const level = ctx.sim.needs.level(ctx.actor, "energy");
+        return level >= min ? null : (message ?? `Not enough energy (need ${min}). Sleep or eat first.`);
+      },
     };
   },
 
@@ -130,14 +132,27 @@ export const requirements = {
   hasItem(
     itemId: string | ((ctx: RequirementContext) => string),
     qty: number | ((ctx: RequirementContext) => number) = 1,
-  ): Requirement {
-    return {
+  ): Requirement {    return {
       id: "hasItem",
       check: (ctx) => {
         const id = typeof itemId === "string" ? itemId : itemId(ctx);
         const needed = typeof qty === "number" ? qty : qty(ctx);
         const have = ctx.actor.inventory.count(id);
         return have >= needed ? null : `Not enough ${id}: have ${have}, need ${needed}`;
+      },
+    };
+  },
+
+  /** Gate an action on custom need levels, e.g. needsAtLeast({ focus: 30 }). */
+  needsAtLeast(levels: Record<string, number>): Requirement {
+    return {
+      id: `needsAtLeast:${Object.keys(levels).sort().join(",")}`,
+      check: (ctx) => {
+        for (const [needId, min] of Object.entries(levels)) {
+          const value = ctx.sim.needs.level(ctx.actor, needId); // throws "Unknown need" on typo
+          if (value < min) return `Need ${needId} too low (${value} < ${min})`;
+        }
+        return null;
       },
     };
   },

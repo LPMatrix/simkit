@@ -1,4 +1,5 @@
 import type { JobDef } from "./types.js";
+import { invalidInput } from "./runtime/action.js";
 
 export interface Job extends JobDef {
   name: string;
@@ -16,6 +17,12 @@ export class JobManager {
 
   define(def: JobDef & { name?: string }): Job {
     if (!def.id) throw new Error("Job must have an id");
+    if (
+      def.dismissAfterAbsentDays !== undefined &&
+      (!Number.isInteger(def.dismissAfterAbsentDays) || def.dismissAfterAbsentDays < 0)
+    ) {
+      throw invalidInput(`Job ${def.id} dismissAfterAbsentDays must be an integer >= 0`);
+    }
     const job: Job = {
       id: def.id,
       name: def.name ?? def.id,
@@ -24,6 +31,7 @@ export class JobManager {
       workingHours: def.workingHours ?? 8,
       energyCost: def.energyCost ?? 20,
       requirements: def.requirements ?? {},
+      dismissAfterAbsentDays: def.dismissAfterAbsentDays,
     };
     this.jobs.set(job.id, job);
     return job;

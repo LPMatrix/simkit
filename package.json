@@ -1,6 +1,6 @@
 {
   "name": "@sirmatrix/simkit",
-  "version": "0.15.1",
+  "version": "0.18.0",
   "description": "Build the rules. SimKit runs the world. A TypeScript simulation runtime and domain SDK for systemic worlds.",
   "type": "module",
   "main": "./dist/index.js",

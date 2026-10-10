@@ -7,6 +7,7 @@ import type { EventDefinition } from "./events.js";
 import type { ItemDef } from "./inventory.js";
 import type { JobDef, LocationDef } from "./types.js";
 import type { MissionDef } from "./missions.js";
+import type { NeedDef } from "./needs.js";
 import type { ScheduleDef } from "./schedules.js";
 import type { NpcDef } from "./npcs.js";
 import type { WorldVersionDef } from "./worlds.js";
@@ -34,6 +35,7 @@ export interface GameConfigFile {
   missions?: MissionDef[];
   entities?: EntityDef[];
   schedules?: ScheduleDef[];
+  needs?: NeedDef[];
   worldVersions?: WorldVersionDef[];
 }
 
@@ -80,6 +82,7 @@ export function createSimulationFromConfig(cfg: GameConfigFile): {
     missions: cfg.missions,
     entities: cfg.entities,
     schedules: cfg.schedules,
+    needs: cfg.needs,
   });
   for (const packId of cfg.packs ?? []) installPack(sim, packId);
   return { sim, worldVersions: cfg.worldVersions ?? [] };

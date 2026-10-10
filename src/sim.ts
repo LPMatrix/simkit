@@ -18,6 +18,7 @@ import { ActionRefused, invalidInput, type ActionDef, type CauseLink, type Cause
 import { BUILTIN_SYSTEMS, isSystem, type System } from "./systems.js";
 import type { Pack } from "./packs/worlds.js";
 import { EntityRegistry, type Entity, type EntityDef } from "./entities.js";
+import { NeedManager, defineBuiltinNeeds, type Need, type NeedDef } from "./needs.js";
 import { ScheduleManager, type Schedule, type ScheduleDef } from "./schedules.js";
 import { createHash } from "node:crypto";
 import { SIMULATION_VERSION, canonicalize } from "./version.js";
@@ -81,6 +82,7 @@ export interface SimSnapshot {
   causeSeq?: number;
   entities?: Entity[];
   schedules?: Schedule[];
+  needs?: Need[];
   priceSources?: Record<string, PriceSource>;
   /** Runtime state of NPCs that have acted. Absent on old snapshots. */
   npcActors?: PlayerJSON[];
@@ -177,6 +179,8 @@ export class Sim {
   entities = new EntityRegistry();
   /** Recurring obligations settled once per game day through the pipeline. */
   schedules = new ScheduleManager();
+  /** Configurable needs (thirst, morale, ...) decayed daily by the needs system. */
+  needs = new NeedManager();
   /**
    * Freeze intraday clock movement (population-run harness mode). Action
    * energy, money, and state effects still apply; only time stops, so days
@@ -194,6 +198,9 @@ export class Sim {
     if (config.startingLocation) this.world.define(config.startingLocation);
     this.wirePlayerFactory(config);
     this.businesses = new BusinessManager(this.entities);
+    // Built-in needs resolve through the same registry as custom needs,
+    // so energy/health costs behave identically to any other need.
+    defineBuiltinNeeds(this.needs);
     for (const system of BUILTIN_SYSTEMS) this.use(system);
   }
 
@@ -319,6 +326,11 @@ export class Sim {
   /** True for account-holding players, as opposed to NPC actors. */
   isPlayer(id: string): boolean {
     return this.playersMap.has(id);
+  }
+
+  /** Every participant with needs and state: players plus NPCs that have acted. */
+  allActors(): Player[] {
+    return [...this.playersMap.values(), ...this.npcActors.values()];
   }
 
   /** Look up an actor without creating NPC state. Undefined when unknown. */
@@ -961,6 +973,12 @@ export class Sim {
   installSystem(system: System): void {
     if (!system.id || typeof system.id !== "string") throw invalidInput("System must have an id");
     if (this.installedSystems.has(system.id)) throw invalidInput(`System already installed: ${system.id}`);
+    const missing = (system.dependencies ?? []).filter((dep) => !this.installedSystems.has(dep));
+    if (missing.length > 0) {
+      throw invalidInput(
+        `System "${system.id}" needs missing ${missing.length === 1 ? "dependency" : "dependencies"}: ${missing.join(", ")}. Install ${missing.join(", ")} first.`,
+      );
+    }
     for (const action of system.actions ?? []) this.defineAction(action);
     for (const schedule of system.schedules ?? []) this.schedules.define(schedule, this.clock.day);
     this.installedSystems.set(system.id, system);
@@ -1126,6 +1144,7 @@ export class Sim {
       causes: [...this.causes],
       entities: this.entities.toJSON(),
       schedules: this.schedules.toJSON(),
+      needs: this.needs.toJSON(),
       priceSources: Object.fromEntries(
         Object.entries(this.priceSources).map(([k, v]) => [k, { ...v }]),
       ),
@@ -1147,6 +1166,8 @@ export class Sim {
     // Entities before the business manager: it is a view over this registry.
     sim.entities = EntityRegistry.fromJSON(snapshot.entities);
     sim.schedules = ScheduleManager.fromJSON(snapshot.schedules);
+    sim.needs = NeedManager.fromJSON(snapshot.needs);
+    defineBuiltinNeeds(sim.needs); // old saves predate the needs registry
     sim.businesses = new BusinessManager(sim.entities);
     // Legacy snapshots carry a businesses array without entities: import it.
     // New snapshots already contain the same businesses as entities, so this is a no-op for them.
@@ -1205,6 +1226,7 @@ export function createSimulation(opts: {
   missions?: MissionDef[];
   entities?: EntityDef[];
   schedules?: ScheduleDef[];
+  needs?: NeedDef[];
   store?: Store;
 }): Sim {
   const sim = new Sim(
@@ -1226,5 +1248,6 @@ export function createSimulation(opts: {
   for (const mission of opts.missions ?? []) sim.missions.define(mission);
   for (const entity of opts.entities ?? []) sim.entities.define(entity);
   for (const schedule of opts.schedules ?? []) sim.schedules.define(schedule);
+  for (const need of opts.needs ?? []) sim.needs.define(need);
   return sim;
 }

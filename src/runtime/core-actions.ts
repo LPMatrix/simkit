@@ -76,8 +76,12 @@ export const workAction: ActionDef<number> = {
     const pay = sim.jobs.dailyPay(jobId);
 
     actor.touch();
+    // Stamp the shift's start day before time advances: midnight-crossing
+    // shifts count as work on the day they start, and the mid-action day
+    // tick sees the stamp instead of stale absence.
+    actor.workHistory[jobId] = sim.clock.day;
     actor.hooks.advanceMinutes(job.workingHours * 60);
-    actor.adjustEnergy(-job.energyCost);
+    sim.needs.adjust(actor, "energy", -job.energyCost);
     const tx = actor.wallet.credit(pay, actor.stamp(`salary:${jobId}`));
     actor.progression.addXp(10);
     sim.emit("PLAYER_WORKED", { jobId, hours: job.workingHours, pay, txId: tx.id }, actor.id);
@@ -106,7 +110,7 @@ export const travelAction: ActionDef<void> = {
     actor.hooks.advanceMinutes(loc.travelTimeMinutes);
     actor.locationId = to;
     actor.visits[to] = (actor.visits[to] ?? 0) + 1;
-    actor.adjustEnergy(-5);
+    sim.needs.adjust(actor, "energy", -5);
     sim.emit(
       "PLAYER_TRAVELED",
       { to, cost, minutes: loc.travelTimeMinutes },
@@ -122,8 +126,8 @@ export const sleepAction: ActionDef<void> = {
     const hours = (inputs.hours as number | undefined) ?? 8;
     actor.touch();
     actor.hooks.advanceMinutes(Math.round(hours * 60));
-    actor.adjustEnergy(60);
-    actor.adjustHealth(10);
+    sim.needs.adjust(actor, "energy", 60);
+    sim.needs.adjust(actor, "health", 10);
     sim.emit("PLAYER_SLEPT", { hours }, actor.id);
   },
 };
@@ -137,8 +141,8 @@ export const eatAction: ActionDef<void> = {
     const energyGain = (inputs.energyGain as number | undefined) ?? 25;
     actor.touch();
     if (cost > 0) actor.wallet.debit(cost, actor.stamp("food"));
-    actor.adjustEnergy(energyGain);
-    actor.adjustHealth(2);
+    sim.needs.adjust(actor, "energy", energyGain);
+    sim.needs.adjust(actor, "health", 2);
     sim.emit("PLAYER_ATE", { cost, energyGain }, actor.id);
   },
 };
@@ -163,6 +167,9 @@ export const acceptJobAction: ActionDef<void> = {
   execute({ sim, actor, inputs }) {
     const jobId = inputs.jobId as string;
     actor.jobId = jobId;
+    // Hiring (including rehiring) restarts the absence clock: absence counts
+    // from this day, not from work done before a dismissal.
+    actor.workHistory[jobId] = sim.clock.day;
     sim.emit("JOB_ACCEPTED", { jobId }, actor.id);
   },
 };
@@ -206,9 +213,12 @@ export const buyAction: ActionDef<void> = {
 
 export const useAction: ActionDef<void> = {
   id: "use",
-  description: "Use one unit of an item: applies its energy and health effects.",
+  description: "Use one unit of an item: applies its energy, health, and custom need effects.",
   validate({ sim, inputs }) {
-    sim.items.get(requireString(inputs, "itemId")); // throws "Unknown item"
+    const item = sim.items.get(requireString(inputs, "itemId")); // throws "Unknown item"
+    for (const needId of Object.keys(item.restores ?? {})) {
+      sim.needs.get(needId); // throws "Unknown need" before anything is consumed
+    }
   },
   requires: [requirements.hasItem((ctx) => ctx.inputs.itemId as string, 1)],
   execute({ sim, actor, inputs }) {
@@ -216,11 +226,22 @@ export const useAction: ActionDef<void> = {
     const item = sim.items.get(itemId);
     actor.touch();
     actor.inventory.remove(itemId, 1);
-    if (item.energy) actor.adjustEnergy(item.energy);
-    if (item.health) actor.adjustHealth(item.health);
+    if (item.energy) sim.needs.adjust(actor, "energy", item.energy);
+    if (item.health) sim.needs.adjust(actor, "health", item.health);
+    const restored: Record<string, number> = {};
+    for (const [needId, amount] of Object.entries(item.restores ?? {})) {
+      const before = sim.needs.level(actor, needId); // throws "Unknown need" on typo
+      const after = sim.needs.adjust(actor, needId, amount);
+      restored[needId] = after - before;
+      // Recovery clears fired alerts so thresholds can fire again.
+      const need = sim.needs.get(needId);
+      for (const t of need.thresholds ?? []) {
+        if (after > t.below) delete actor.needAlerts[`${needId}:${t.below}`];
+      }
+    }
     sim.emit(
       "PLAYER_USED_ITEM",
-      { itemId, energy: item.energy ?? 0, health: item.health ?? 0 },
+      { itemId, energy: item.energy ?? 0, health: item.health ?? 0, restored },
       actor.id,
     );
   },

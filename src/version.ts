@@ -5,7 +5,7 @@
  * record why in tests/fingerprints.json. The fingerprint test fails on any
  * unexplained drift.
  */
-export const SIMULATION_VERSION = 2;
+export const SIMULATION_VERSION = 5;
 
 /** Deterministic encoding: object keys sorted recursively, so structurally
  * identical states hash identically regardless of insertion order.

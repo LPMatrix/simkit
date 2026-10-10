@@ -7,6 +7,8 @@ export interface ItemDef {
   energy?: number;
   /** Health restored on use. */
   health?: number;
+  /** Custom needs restored on use, by need id. Unknown ids fail at use time. */
+  restores?: Record<string, number>;
   description?: string;
 }
 
@@ -25,6 +27,7 @@ export class ItemCatalog {
       price: def.price ?? 0,
       energy: def.energy,
       health: def.health,
+      restores: def.restores ? { ...def.restores } : undefined,
       description: def.description,
     };
     this.items.set(item.id, item);

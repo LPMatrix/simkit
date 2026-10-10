@@ -164,3 +164,40 @@ describe("systems over HTTP", () => {
     expect(raw.systems).toHaveLength(10);
   });
 });
+
+describe("system dependencies", () => {
+  const farm: System = {
+    id: "farm",
+    description: "Grows crops; needs seasons and irrigation.",
+    dependencies: ["seasons", "irrigation"],
+    actions: [{ id: "harvest", execute: () => "wheat" }],
+  };
+
+  it("names every missing dependency and installs nothing on failure", () => {
+    const sim = createSimulation({ gameId: "deps", seed: 1 });
+    const actionsBefore = sim.listActions().length;
+    expect(() => sim.use(farm)).toThrow(/needs missing dependencies: seasons, irrigation/);
+    expect(sim.systems().map((s) => s.id)).not.toContain("farm");
+    expect(sim.listActions()).toHaveLength(actionsBefore);
+  });
+
+  it("installs once dependencies are present", () => {
+    const sim = createSimulation({ gameId: "deps2", seed: 1 });
+    sim.use({ id: "irrigation", description: "Water.", actions: [] });
+    expect(() => sim.use(farm)).toThrow(/needs missing dependency: seasons\./);
+    sim.use({ id: "seasons", description: "Seasons.", actions: [] });
+    sim.use(farm);
+    expect(sim.systems().map((s) => s.id)).toContain("farm");
+    expect(sim.listActions().map((a) => a.id)).toContain("harvest");
+  });
+
+  it("accepts a dependencies-only bundle as a system", async () => {
+    const sim = createSimulation({ gameId: "deps3", seed: 1 });
+    const before = sim.listActions().length;
+    sim.use({ id: "meta", dependencies: [] });
+    expect(sim.systems().map((s) => s.id)).toContain("meta");
+    expect(sim.listActions()).toHaveLength(before);
+    const p = await sim.players.create({ name: "A" });
+    expect(() => sim.execute(p.id, "harvest")).toThrow(/Unknown action/);
+  });
+});

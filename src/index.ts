@@ -34,6 +34,7 @@ export type { CauseTrace, GraphNode, CausalEdge, PriceSource } from "./sim.js";
 export { workAction, CORE_ACTIONS } from "./runtime/core-actions.js";
 export { enrolAction, ENTITY_ACTIONS } from "./runtime/entity-actions.js";
 export { EntityRegistry, type Entity, type EntityDef, type AttributeValue } from "./entities.js";
+export { NeedManager, defineBuiltinNeeds, type Need, type NeedDef, type NeedThreshold } from "./needs.js";
 export { SIMULATION_VERSION, canonicalize } from "./version.js";
 export { BUILTIN_SYSTEMS, isSystem, type System, type SystemContext } from "./systems.js";
 export { ScheduleManager, type Schedule, type ScheduleDef, type MissPolicy } from "./schedules.js";

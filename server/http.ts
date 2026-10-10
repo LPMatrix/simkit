@@ -438,6 +438,17 @@ export function createHttpServer(registry: GameRegistry, auth: AuthConfig): Serv
       send(res, 201, mission);
     }),
 
+    route("GET", "/v1/games/:gameId/needs", (_req, res, p) => {
+      send(res, 200, { needs: registry.get(p.gameId).needs.list() });
+    }),
+
+    route("POST", "/v1/games/:gameId/needs", async (_req, res, p, _url, body) => {
+      const sim = registry.get(p.gameId);
+      const need = sim.needs.define(asObject(body) as never);
+      registry.schedulePersist(p.gameId);
+      send(res, 201, need);
+    }),
+
     route("POST", "/v1/games/:gameId/players/:playerId/talk", async (_req, res, p, _url, body) => {      const sim = registry.get(p.gameId);
       const b = asObject(body);
       if (typeof b.npcId !== "string") return send(res, 400, { error: "npcId required" });

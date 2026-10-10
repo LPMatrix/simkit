@@ -99,6 +99,8 @@ Schedules settle automatically once per game day through `settle-obligation`. Mi
 | POST | `.../items` | Define an item |
 | POST | `.../businesses` | Define a business |
 | POST | `.../missions` | Define a mission |
+| GET | `.../needs` | List custom needs |
+| POST | `.../needs` | Define: `{ id, max, initial?, decayPerDay?, thresholds? }` |
 | GET | `/v1/packs?kind=` | List installable packs |
 | POST | `.../packs/:packId/install` | Install a pack |
 

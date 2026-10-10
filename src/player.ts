@@ -21,6 +21,12 @@ export interface PlayerJSON {
   visits: Record<string, number>;
   /** Course entities this player is enrolled in. */
   enrolments?: Record<string, boolean>;
+  /** Custom need values by need id. Absent on old saves. */
+  needs?: Record<string, number>;
+  /** Fired threshold alerts by need id, cleared on recovery. */
+  needAlerts?: Record<string, boolean>;
+  /** Last game day a shift was completed, by job id. Absent on old saves. */
+  workHistory?: Record<string, number>;
 }
 
 /** Services the Sim provides to each player. Wired by Sim; not serialized. */
@@ -63,6 +69,12 @@ export class Player {
   visits: Record<string, number> = {};
   /** Course entities this player is enrolled in. */
   enrolments: Record<string, boolean> = {};
+  /** Custom need values by need id. */
+  needs: Record<string, number> = {};
+  /** Fired threshold alerts by need id, cleared on recovery. */
+  needAlerts: Record<string, boolean> = {};
+  /** Last game day a shift was completed, by job id. Drives dismissal. */
+  workHistory: Record<string, number> = {};
 
   /** Wired by Sim; not serialized. */
   hooks!: PlayerHooks;
@@ -162,6 +174,9 @@ export class Player {
       lastActiveDay: this.lastActiveDay,
       visits: { ...this.visits },
       enrolments: { ...this.enrolments },
+      needs: { ...this.needs },
+      needAlerts: { ...this.needAlerts },
+      workHistory: { ...this.workHistory },
     };
   }
 
@@ -178,6 +193,9 @@ export class Player {
     p.missions = { ...(json.missions ?? {}) };
     p.lastActiveDay = json.lastActiveDay ?? 1;
     p.visits = { ...(json.visits ?? {}) };
+    p.needs = { ...(json.needs ?? {}) };
+    p.needAlerts = { ...(json.needAlerts ?? {}) };
+    p.workHistory = { ...(json.workHistory ?? {}) };
     p.enrolments = { ...(json.enrolments ?? {}) };
     return p;
   }

@@ -35,6 +35,12 @@ export interface JobDef {
   workingHours?: number;
   energyCost?: number;
   requirements?: Record<string, number>;
+  /**
+   * Fully-tolerated missed days before dismissal. Each game day without a
+   * completed shift counts; dismissal fires once absence exceeds this.
+   * Absent means never dismissed. Must be an integer >= 0.
+   */
+  dismissAfterAbsentDays?: number;
 }
 
 export interface TransactionMeta {
